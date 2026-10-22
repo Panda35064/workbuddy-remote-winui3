@@ -3766,6 +3766,224 @@ function renderWorkBuddyNativeShimJs({
     }).catch(() => {});
   }
 
+  var daemonBridgeEntry = null;
+
+  // 官方 Desktop SDK 用 preload 暴露的 __wbEventBridge(cb) 订阅 wb:event 推送流，
+  // 会话列表（listChange）、工作空间、定时任务等都靠这条流刷新。浏览器里没有 preload，
+  // 这里用同名 API 接管，并把订阅请求转给 bridge，由 bridge 从桌面端转发事件。
+  var desktopEventSubscribers = [];
+  var desktopEventSubscribed = false;
+
+  function ensureDesktopEventSubscription() {
+    if (desktopEventSubscribed) {
+      return;
+    }
+    desktopEventSubscribed = true;
+    request({ type: "desktop-host-events-subscribe" }).catch(function () {
+      desktopEventSubscribed = false;
+    });
+  }
+
+  function installDesktopEventBridge() {
+    if (typeof globalThis.__wbEventBridge === "function") {
+      return;
+    }
+    globalThis.__wbEventBridge = function (callback) {
+      if (typeof callback !== "function") {
+        return function () {};
+      }
+      desktopEventSubscribers.push(callback);
+      ensureDesktopEventSubscription();
+      return function () {
+        var index = desktopEventSubscribers.indexOf(callback);
+        if (index >= 0) {
+          desktopEventSubscribers.splice(index, 1);
+        }
+      };
+    };
+  }
+
+  function deliverDesktopEvent(event, payload) {
+    if (!desktopEventSubscribers.length) {
+      return;
+    }
+    for (var index = 0; index < desktopEventSubscribers.length; index += 1) {
+      try {
+        desktopEventSubscribers[index](event, payload);
+      } catch (error) {
+        console.error("[workbuddy-remote] desktop event handler failed", event, error);
+      }
+    }
+  }
+
+  function sendDaemonBridgeMessage(payload) {
+    connect().then(function () {
+      try {
+        sendRawBridgeMessage(JSON.stringify(payload));
+      } catch (error) {
+        console.error("[workbuddy-remote] daemon bridge send failed", error);
+      }
+    }).catch(function (error) {
+      console.error("[workbuddy-remote] daemon bridge connect failed", error);
+    });
+  }
+
+  function detachDaemonBridgePort() {
+    var entry = daemonBridgeEntry;
+    if (!entry) {
+      return;
+    }
+    daemonBridgeEntry = null;
+    try {
+      entry.port.close();
+    } catch (error) {
+    }
+    sendDaemonBridgeMessage({ type: "daemon-close" });
+  }
+
+  function handleDaemonTransportRequest(event) {
+    var data = event ? event.data : null;
+    if (!data || data.type !== "workbuddy:open-local-daemon-transport-port") {
+      return;
+    }
+    var port = event.ports && event.ports[0];
+    if (!port) {
+      return;
+    }
+    detachDaemonBridgePort();
+    daemonBridgeEntry = { port: port };
+    port.addEventListener("message", function (messageEvent) {
+      sendDaemonBridgeMessage({ type: "daemon-send", frame: messageEvent.data });
+    });
+    port.start();
+    sendDaemonBridgeMessage({ type: "daemon-open" });
+  }
+
+  function deliverDaemonFrame(frame) {
+    var entry = daemonBridgeEntry;
+    if (!entry) {
+      return;
+    }
+    try {
+      entry.port.postMessage(frame);
+    } catch (error) {
+      console.error("[workbuddy-remote] daemon frame delivery failed", error);
+    }
+  }
+
+  // 扩展资源在桌面端走 wb-extension:// 自定义协议，浏览器没有这个协议。
+  // 只在"真正发起请求"的边界（fetch/XHR/img.src）改写，不动页面里的数据，
+  // 避免主进程用原 URL 再拼一次时产生重复前缀。
+  var EXTENSION_SCHEME_PREFIX = "wb-extension://";
+  var EXTENSION_HTTP_BASE = "/wb-extension/";
+
+  function rewriteExtensionUrl(value) {
+    if (typeof value === "string" && value.indexOf(EXTENSION_SCHEME_PREFIX) === 0) {
+      return EXTENSION_HTTP_BASE + value.slice(EXTENSION_SCHEME_PREFIX.length);
+    }
+    return value;
+  }
+
+  function installExtensionAssetBridge() {
+    if (typeof globalThis.fetch === "function") {
+      var originalFetch = globalThis.fetch;
+      globalThis.fetch = function (input, init) {
+        try {
+          if (typeof input === "string") {
+            input = rewriteExtensionUrl(input);
+          } else if (typeof Request === "function" && input instanceof Request) {
+            var rewrittenUrl = rewriteExtensionUrl(input.url);
+            if (rewrittenUrl !== input.url) {
+              input = new Request(rewrittenUrl, input);
+            }
+          }
+        } catch (error) {
+        }
+        return originalFetch.call(this, input, init);
+      };
+    }
+
+    if (typeof XMLHttpRequest === "function") {
+      var originalOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        var args = Array.prototype.slice.call(arguments);
+        args[1] = rewriteExtensionUrl(url);
+        return originalOpen.apply(this, args);
+      };
+    }
+
+    if (typeof HTMLImageElement === "function") {
+      try {
+        var descriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+        if (descriptor && descriptor.set && descriptor.configurable) {
+          Object.defineProperty(HTMLImageElement.prototype, "src", {
+            configurable: true,
+            enumerable: descriptor.enumerable,
+            get: descriptor.get,
+            set: function (value) {
+              return descriptor.set.call(this, rewriteExtensionUrl(value));
+            },
+          });
+        }
+      } catch (error) {
+      }
+    }
+  }
+
+  function installDesktopHostShim() {
+    window.addEventListener("message", handleDaemonTransportRequest);
+    installExtensionAssetBridge();
+    installDesktopEventBridge();
+    if (globalThis.workbuddyDesktop) {
+      return;
+    }
+
+    var noopSubscription = function () {
+      return function () {};
+    };
+    var hostEvents = {
+      on: noopSubscription,
+      once: noopSubscription,
+      off: function () {},
+      removeAllListeners: function () {},
+      emit: function () {},
+    };
+    var hostPlatform = "win32";
+    if (typeof navigator === "object" && navigator) {
+      var userAgent = navigator.userAgent || "";
+      if (userAgent.indexOf("Mac") >= 0) {
+        hostPlatform = "darwin";
+      } else if (userAgent.indexOf("Linux") >= 0) {
+        hostPlatform = "linux";
+      }
+    }
+    var resolvedVersion = typeof workBuddyVersion === "string" ? workBuddyVersion : "";
+
+    globalThis.workbuddyDesktop = {
+      platform: hostPlatform,
+      appVersion: resolvedVersion,
+      configDir: "",
+      isDev: false,
+      machineId: "",
+      invoke: function (channel) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        return request({ type: "desktop-host-invoke", channel: channel, args: args });
+      },
+      events: hostEvents,
+    };
+
+    // 官方 Desktop SDK 走 preload 暴露的通用 __wbInvoke(channel, payload, ...rest)。
+    globalThis.__wbInvoke = function (channel) {
+      var args = Array.prototype.slice.call(arguments, 1);
+      return request({
+        type: "desktop-host-invoke",
+        via: "preload",
+        channel: channel,
+        args: args,
+      });
+    };
+  }
+
   function handleBridgeMessage(message) {
     if (message.id && pending.has(message.id)) {
       const entry = pending.get(message.id);
@@ -3774,6 +3992,18 @@ function renderWorkBuddyNativeShimJs({
         entry.reject(new Error(message.error || "WorkBuddy bridge request failed"));
       } else {
         entry.resolve(decodeTransport(message.result));
+      }
+      return;
+    }
+
+    if (message.type === "daemon-frame") {
+      deliverDaemonFrame(message.frame);
+      return;
+    }
+
+    if (message.type === "desktop-host-event") {
+      if (typeof message.event === "string" && message.event) {
+        deliverDesktopEvent(message.event, decodeTransport(message.payload));
       }
       return;
     }
@@ -4249,6 +4479,7 @@ function renderWorkBuddyNativeShimJs({
   });
 
   globalThis.buddyAPI = buddyApi;
+  installDesktopHostShim();
   installRemoteHistoryPagerScrollWatcher();
   globalThis.__WORKBUDDY_VERSION__ = workBuddyVersion;
   globalThis.__electronLog = globalThis.__electronLog || {

@@ -255,6 +255,9 @@ if ($RelaunchShell -eq "cmd") {
 Start-Sleep -Milliseconds 800
 
 $startupArgs = Build-StartupArgumentList
+# Start-Process -ArgumentList 把数组按空格拼接且不加引号，含空格的脚本路径会断成两半，
+# 这里先给每个参数补引号再拼成一整行。
+$startupArgLine = ($startupArgs | ForEach-Object { Quote-CmdArgument -Value ([string]$_) }) -join " "
 
 switch ($RelaunchShell) {
     "hidden" {
@@ -262,11 +265,11 @@ switch ($RelaunchShell) {
             startupScript = $startupScript
             shell = "hidden"
         }
-        Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList $startupArgs | Out-Null
+        Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList $startupArgLine | Out-Null
         break
     }
     "cmd" {
-        $command = ($startupArgs | ForEach-Object { Quote-CmdArgument -Value $_ }) -join " "
+        $command = $startupArgLine
         Write-BridgeRestartLog -Event "restart_helper.relaunch" -Message "Relaunching bridge in cmd." -Details @{
             startupScript = $startupScript
             shell = "cmd"
@@ -279,7 +282,7 @@ switch ($RelaunchShell) {
             startupScript = $startupScript
             shell = "powershell"
         }
-        Start-Process -FilePath "powershell.exe" -ArgumentList $startupArgs | Out-Null
+        Start-Process -FilePath "powershell.exe" -ArgumentList $startupArgLine | Out-Null
         break
     }
 }

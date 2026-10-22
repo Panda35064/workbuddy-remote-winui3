@@ -310,6 +310,52 @@ function Open-BridgeUrlSafely {
     Write-Host "Bridge is ready, but the browser could not be opened automatically: $Url"
 }
 
+function Quote-NativeArgument {
+    param([string]$Value)
+
+    if ([string]::IsNullOrEmpty($Value)) {
+        return '""'
+    }
+
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $builder = [System.Text.StringBuilder]::new()
+    [void]$builder.Append('"')
+    $backslashCount = 0
+    foreach ($char in $Value.ToCharArray()) {
+        if ($char -eq '\') {
+            $backslashCount++
+            continue
+        }
+        if ($char -eq '"') {
+            [void]$builder.Append('\' * ($backslashCount * 2 + 1))
+            [void]$builder.Append($char)
+            $backslashCount = 0
+            continue
+        }
+        if ($backslashCount -gt 0) {
+            [void]$builder.Append('\' * $backslashCount)
+            $backslashCount = 0
+        }
+        [void]$builder.Append($char)
+    }
+    if ($backslashCount -gt 0) {
+        [void]$builder.Append('\' * ($backslashCount * 2))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Build-CommandLineArgumentString {
+    param([object[]]$Arguments)
+
+    # Start-Process -ArgumentList 会把数组用空格拼接，且不会自动加引号。
+    # 路径里带空格（如 D:\Program Files\...）时必须自己补引号，否则子进程只收到 "D:\Program"。
+    return (@($Arguments) | ForEach-Object { Quote-NativeArgument ([string]$_) }) -join " "
+}
+
 function Get-BridgeUrls {
     param([int]$Port, [string]$ListenAddress)
     $urls = [System.Collections.Specialized.OrderedDictionary]::new()
@@ -410,10 +456,11 @@ if (Test-PortListening -Port ([int]$CdpPort)) {
 else {
     Write-Host "Launching WorkBuddy with CDP on port $CdpPort..."
     Write-Host "User data dir: $UserDataDir"
-    $workBuddyProcess = Start-Process -FilePath $exePath -ArgumentList @(
+    $workBuddyArgumentLine = Build-CommandLineArgumentString -Arguments @(
         "--remote-debugging-port=$CdpPort",
         "--user-data-dir=$UserDataDir"
-    ) -PassThru
+    )
+    $workBuddyProcess = Start-Process -FilePath $exePath -ArgumentList $workBuddyArgumentLine -PassThru
     $workBuddyPid = $workBuddyProcess.Id
 
     $cdpReady = $false
@@ -458,9 +505,10 @@ $env:WORKBUDDY_REMOTE_EVENT_LOG_PATH = $bridgeEvents
 $env:WORKBUDDY_REMOTE_UI_LANG = [System.Globalization.CultureInfo]::CurrentUICulture.Name
 try {
     Write-Host "Starting lightweight bridge on $ListenHost`:$BridgePort..."
+    $bridgeArgumentLine = Build-CommandLineArgumentString -Arguments $bridgeArgs
     $bridgeProcess = Start-Process `
         -FilePath $nodePath `
-        -ArgumentList $bridgeArgs `
+        -ArgumentList $bridgeArgumentLine `
         -WorkingDirectory $projectRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput $bridgeLog `

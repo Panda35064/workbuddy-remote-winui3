@@ -201,6 +201,20 @@ function getLanUrls(port) {
   return urls;
 }
 
+// 浏览器里没有 Electron 的 wb-extension:// 自定义协议。主进程下发的扩展资源 URL
+// （形如 wb-extension://library/ui/assets/remoteEntry.js?v=0.0.1&wbs=bundled）统一改写成
+// bridge 的 HTTP 路由 /wb-extension/library/...，否则 module federation 的 import()
+// 会直接抛 `URL scheme "wb-extension" is not supported`。
+const EXTENSION_SCHEME_PREFIX = "wb-extension://";
+const EXTENSION_HTTP_BASE = "/wb-extension/";
+
+function rewriteExtensionSchemeUrls(raw) {
+  if (typeof raw !== "string" || !raw.includes(EXTENSION_SCHEME_PREFIX)) {
+    return raw;
+  }
+  return raw.split(EXTENSION_SCHEME_PREFIX).join(EXTENSION_HTTP_BASE);
+}
+
 function encodePayloadForTransport(value) {
   if (value instanceof ArrayBuffer) {
     return { kind: "base64", base64: Buffer.from(value).toString("base64") };
@@ -216,6 +230,8 @@ function encodePayloadForTransport(value) {
 
 export {
   DEFAULTS,
+  EXTENSION_HTTP_BASE,
+  EXTENSION_SCHEME_PREFIX,
   NO_STORE_CACHE_CONTROL,
   WebSocket,
   WebSocketServer,
@@ -229,5 +245,6 @@ export {
   readJsonBody,
   resolveWorkBuddyAsarPath,
   resolveWorkBuddyExePath,
+  rewriteExtensionSchemeUrls,
   text,
 };

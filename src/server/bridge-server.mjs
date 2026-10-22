@@ -2,11 +2,13 @@ import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { createReadStream } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 
 import { AsarArchive } from "../asar.mjs";
 import {
+  EXTENSION_HTTP_BASE,
   WebSocketServer,
   contentTypeFor,
   getLanUrls,
@@ -14,6 +16,7 @@ import {
   NO_STORE_CACHE_CONTROL,
   readJsonBody,
   resolveWorkBuddyAsarPath,
+  rewriteExtensionSchemeUrls,
   text,
 } from "../shared.mjs";
 import { logger, summarizeMessage } from "../logger.mjs";
@@ -47,6 +50,26 @@ const BROWSER_WS_MAX_PAYLOAD_BYTES = readPositiveIntegerEnv(
 const versionedScriptCompressionCache = new Map();
 const WORKBUDDY_ASAR_PATH = resolveWorkBuddyAsarPath();
 const workBuddyAsar = new AsarArchive(WORKBUDDY_ASAR_PATH);
+// Electron 用 wb-extension://<id>/<path> 从这些目录读扩展资源（内置扩展在
+// app.asar.unpacked 下，安装版扩展在用户数据目录）。浏览器没有该协议，
+// 由 bridge 用 /wb-extension/<id>/<path> 提供同样的内容。
+const WORKBUDDY_RESOURCES_DIR = path.dirname(WORKBUDDY_ASAR_PATH);
+const EXTENSION_RESOURCE_ROOTS = [
+  path.join(WORKBUDDY_RESOURCES_DIR, "app.asar.unpacked", "resources", "extensions"),
+  path.join(WORKBUDDY_RESOURCES_DIR, "extensions"),
+  path.join(process.env.APPDATA || "", "WorkBuddy", "extensions"),
+  path.join(process.env.LOCALAPPDATA || "", "WorkBuddy", "extensions"),
+].filter((root) => root && !root.startsWith("WorkBuddy"));
+const EXTENSION_TEXT_ASSET_PATTERN = /\.(?:css|html|js|json|map|mjs|svg)$/iu;
+// shim 首屏要读 WorkBuddy 的 buddyAPI 方法表/版本/语言，这些都要经过 CDP。
+// CDP 偶发卡住时不能让整页永远打不开（浏览器会一直等 shim 这个阻塞脚本），
+// 所以给每次读取加硬超时，并用上次成功的结果兜底。
+const SHIM_METADATA_TIMEOUT_MS = readPositiveIntegerEnv(
+  ["WORKBUDDY_REMOTE_SHIM_METADATA_TIMEOUT_MS"],
+  5000
+);
+const SHIM_METADATA_UNAVAILABLE = Symbol("shim-metadata-unavailable");
+const shimMetadataCache = new Map();
 const MODEL_SECRET_READ_METHODS = new Set([
   "configGet",
   "configGetAll",
@@ -658,6 +681,149 @@ function writeBuffer(res, statusCode, body, headers) {
     "Content-Length": body.byteLength,
   });
   res.end(body);
+}
+
+async function readShimMetadata(key, producer, fallback) {
+  const cached = shimMetadataCache.get(key);
+  let timer;
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(SHIM_METADATA_UNAVAILABLE), SHIM_METADATA_TIMEOUT_MS);
+    if (typeof timer.unref === "function") {
+      timer.unref();
+    }
+  });
+
+  try {
+    const value = await Promise.race([producer(), timeoutPromise]);
+    if (value === SHIM_METADATA_UNAVAILABLE) {
+      logger.warn("shim.metadata.timeout", "WorkBuddy metadata lookup timed out", {
+        key,
+        timeoutMs: SHIM_METADATA_TIMEOUT_MS,
+        servedFromCache: cached !== undefined,
+      });
+      return cached === undefined ? fallback : cached;
+    }
+
+    const isEmpty =
+      value === undefined ||
+      value === null ||
+      (typeof value === "string" && !value) ||
+      (Array.isArray(value) && !value.length);
+    if (isEmpty) {
+      return cached === undefined ? fallback : cached;
+    }
+
+    shimMetadataCache.set(key, value);
+    return value;
+  } catch (error) {
+    logger.warn("shim.metadata.error", "WorkBuddy metadata lookup failed", { key, error });
+    return cached === undefined ? fallback : cached;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---- wb-extension:// 兼容层 -------------------------------------------------
+// 官方把内置扩展放在 resources/app.asar.unpacked/resources/extensions/<id>，
+// 安装版扩展在用户数据目录。浏览器里没有这个自定义协议，这里按 HTTP 路径还原。
+async function writeExtensionAssetBody(req, res, relativePath, buffer, stats) {
+  let body = buffer;
+  if (EXTENSION_TEXT_ASSET_PATTERN.test(relativePath)) {
+    const source = buffer.toString("utf8");
+    const rewritten = rewriteExtensionSchemeUrls(source);
+    if (rewritten !== source) {
+      body = Buffer.from(rewritten, "utf8");
+    }
+  }
+
+  const headers = {
+    "Content-Type": contentTypeFor(relativePath),
+    "Cache-Control": NO_STORE_CACHE_CONTROL,
+    "Access-Control-Allow-Origin": "*",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Content-Length": body.length,
+    ETag: `"ext-${body.length}-${Math.trunc(stats?.mtimeMs ?? 0)}"`,
+  };
+
+  if (req.method === "HEAD") {
+    res.writeHead(200, headers);
+    res.end();
+    return;
+  }
+
+  res.writeHead(200, headers);
+  res.end(body);
+}
+
+async function sendExtensionAsset(req, res, requestUrl) {
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    });
+    res.end();
+    return;
+  }
+
+  let decoded;
+  try {
+    decoded = decodeURIComponent(requestUrl.pathname.slice(EXTENSION_HTTP_BASE.length));
+  } catch {
+    json(res, 400, { error: "Invalid extension path" });
+    return;
+  }
+
+  const separatorIndex = decoded.indexOf("/");
+  if (separatorIndex <= 0) {
+    json(res, 400, { error: "Missing extension id" });
+    return;
+  }
+
+  const extensionId = decoded.slice(0, separatorIndex);
+  const relativePath = decoded.slice(separatorIndex + 1).replace(/^\/+/u, "");
+  let segments = relativePath.split("/").filter(Boolean);
+  // 容错：某些调用方会用改写过一次的地址再拼一遍，出现
+  // /wb-extension/<id>/wb-extension/<id>/... 这种重复段时剥掉。
+  while (segments[0] === "wb-extension" && segments[1] === extensionId) {
+    segments = segments.slice(2);
+  }
+  if (!/^[\w.@-]+$/u.test(extensionId) || !segments.length) {
+    json(res, 400, { error: "Invalid extension path" });
+    return;
+  }
+  if (segments.some((segment) => segment === "..")) {
+    json(res, 403, { error: "Path escape" });
+    return;
+  }
+
+  for (const root of EXTENSION_RESOURCE_ROOTS) {
+    const extensionRoot = path.join(root, extensionId);
+    const absolutePath = path.join(extensionRoot, ...segments);
+    const relative = path.relative(extensionRoot, absolutePath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      continue;
+    }
+    const stats = await stat(absolutePath).catch(() => null);
+    if (!stats?.isFile()) {
+      continue;
+    }
+    await writeExtensionAssetBody(req, res, relativePath, await readFile(absolutePath), stats);
+    return;
+  }
+
+  const asarPath = path.posix.join("resources", "extensions", extensionId, ...segments);
+  const archived = await workBuddyAsar.statFile(asarPath);
+  if (archived) {
+    await writeExtensionAssetBody(req, res, relativePath, await workBuddyAsar.readFile(asarPath));
+    return;
+  }
+
+  logger.warn("extension.asset.not_found", "Extension asset not found", {
+    extensionId,
+    relativePath,
+  });
+  json(res, 404, { error: "Extension asset not found", extensionId, path: relativePath });
 }
 
 async function sendAsarAsset(req, res, archive, relativePath, cacheControl) {
@@ -1290,9 +1456,9 @@ function createRequestHandler(runtime, auth) {
 
       if (requestUrl.pathname === "/bridge/workbuddy-native-shim.js") {
         const [methods, version, locale, features, bridgeUiConfig] = await Promise.all([
-          runtime.getBuddyApiMethods(),
-          runtime.getWorkBuddyVersion(),
-          runtime.getWorkBuddyLocale(),
+          readShimMetadata("methods", () => runtime.getBuddyApiMethods(), []),
+          readShimMetadata("version", () => runtime.getWorkBuddyVersion(), ""),
+          readShimMetadata("locale", () => runtime.getWorkBuddyLocale(), ""),
           loadFeatureFlags(),
           loadBridgeUiConfig(),
         ]);
@@ -1312,6 +1478,11 @@ function createRequestHandler(runtime, auth) {
             cacheControl: REVALIDATED_STATIC_CACHE_CONTROL,
           }
         );
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith(EXTENSION_HTTP_BASE)) {
+        await sendExtensionAsset(req, res, requestUrl);
         return;
       }
 
@@ -1394,6 +1565,52 @@ function attachWebSocketServer(server, runtime, auth) {
       });
 
       try {
+        if (message.type === "desktop-host-invoke") {
+          const result = await runtime.invokeDesktopHost(
+            message.channel,
+            message.args || [],
+            message.via || ""
+          );
+          runtime.sendToSocket(socket, {
+            id: message.id,
+            ok: true,
+            result,
+          });
+          return;
+        }
+
+        if (message.type === "desktop-host-events-subscribe") {
+          const subscribed = await runtime.subscribeDesktopEvents(socket);
+          if (message.id) {
+            runtime.sendToSocket(socket, { id: message.id, ok: true, result: { subscribed } });
+          }
+          return;
+        }
+
+        if (message.type === "daemon-open") {
+          const result = await runtime.openDaemonTransport(socket);
+          if (message.id) {
+            runtime.sendToSocket(socket, { id: message.id, ok: true, result });
+          }
+          return;
+        }
+
+        if (message.type === "daemon-send") {
+          const result = await runtime.sendDaemonFrame(socket, message.frame);
+          if (message.id) {
+            runtime.sendToSocket(socket, { id: message.id, ok: true, result });
+          }
+          return;
+        }
+
+        if (message.type === "daemon-close") {
+          const result = await runtime.closeDaemonTransport(socket);
+          if (message.id) {
+            runtime.sendToSocket(socket, { id: message.id, ok: true, result });
+          }
+          return;
+        }
+
         if (message.type === "buddy-api-call") {
           const bridgeUiConfig = await loadBridgeUiConfig();
           const shouldProtectModelSecrets = bridgeUiConfig.maskBridgeModelSecrets === true;
