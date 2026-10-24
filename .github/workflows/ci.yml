@@ -35,6 +35,10 @@ jobs:
           WORKBUDDY_ALLOW_MISSING_ASAR: "1"
         run: |
           $ErrorActionPreference = "Stop"
+          # PS 5.1 chokes on duplicate case-variant proxy vars (HTTPS_PROXY/https_proxy)
+          foreach ($name in @("http_proxy", "https_proxy", "no_proxy", "all_proxy")) {
+            if (Test-Path "Env:$name") { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+          }
           $out = "smoke-bridge.out.log"
           $err = "smoke-bridge.err.log"
           $proc = Start-Process -FilePath "node" `

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Reflection;
 using System.Text;
 using Microsoft.UI;
@@ -118,6 +119,8 @@ public sealed partial class MainWindow : Window
 
         await RefreshStatusAsync();
         _timer.Start();
+
+        _ = CheckForUpdatesAsync();
 
         if (_autostart)
         {
@@ -292,6 +295,86 @@ public sealed partial class MainWindow : Window
         }
 
         Application.Current.Exit();
+    }
+
+    // ---------- 更新检查 ----------
+
+    private const string LatestReleaseApi =
+        "https://api.github.com/repos/Panda35064/workbuddy-remote-winui3/releases/latest";
+
+    private const string ReleasesPage =
+        "https://github.com/Panda35064/workbuddy-remote-winui3/releases/latest";
+
+    private string _updateUrl = ReleasesPage;
+
+    /// <summary>只做提示，不静默替换：有新版就弹 InfoBar，点“下载”打开 Release 页。</summary>
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            using var handler = new HttpClientHandler { UseProxy = false };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(6) };
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "WorkBuddyRemote");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/vnd.github+json");
+
+            var json = await client.GetStringAsync(LatestReleaseApi).ConfigureAwait(false);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var tag = root.TryGetProperty("tag_name", out var tagElement) ? tagElement.GetString() ?? "" : "";
+            var htmlUrl = root.TryGetProperty("html_url", out var urlElement) ? urlElement.GetString() ?? "" : "";
+            if (string.IsNullOrWhiteSpace(tag))
+            {
+                return;
+            }
+
+            if (!TryParseVersion(tag, out var remote))
+            {
+                return;
+            }
+
+            var current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);
+            if (remote <= new Version(current.Major, current.Minor, Math.Max(0, current.Build)))
+            {
+                return;
+            }
+
+            _updateUrl = string.IsNullOrWhiteSpace(htmlUrl) ? ReleasesPage : htmlUrl;
+            Dispatch(() =>
+            {
+                UpdateBar.Title = $"发现新版本 {tag}";
+                UpdateBar.Message = $"当前版本 {current.ToString(3)}，可在 Releases 页下载安装包。";
+                UpdateBar.IsOpen = true;
+            });
+        }
+        catch
+        {
+            // 网络不可达 / API 限流都不打扰用户。
+        }
+    }
+
+    private static bool TryParseVersion(string tag, out Version version)
+    {
+        version = new Version(0, 0, 0);
+        var text = tag.Trim().TrimStart('v', 'V');
+        var dash = text.IndexOf('-');
+        if (dash > 0)
+        {
+            text = text[..dash];
+        }
+        return Version.TryParse(text, out version!);
+    }
+
+    private void OnDownloadUpdateClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(_updateUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppendLog("打开下载页失败：" + ex.Message);
+        }
     }
 
     // ---------- 导航 ----------
@@ -555,6 +638,152 @@ public sealed partial class MainWindow : Window
     }
 
     private void OnOpenLogsClick(object sender, RoutedEventArgs e) => OpenFolder(_settings.RuntimeTempDir);
+
+    // ---------- 诊断包 ----------
+
+    private async void OnExportDiagnosticsClick(object sender, RoutedEventArgs e)
+        => await RunExclusiveAsync("导出中", ExportDiagnosticsAsync);
+
+    /// <summary>日志 + 脱敏配置 + 系统信息打成一个 zip，方便发 issue。</summary>
+    private async Task ExportDiagnosticsAsync()
+    {
+        AppendLog("正在导出诊断包…");
+
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        var fileName = $"WorkBuddyRemote-diagnostics-{stamp}.zip";
+        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        var targetDir = Directory.Exists(desktop)
+            ? desktop
+            : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var targetPath = Path.Combine(targetDir, fileName);
+
+        try
+        {
+            using var zip = System.IO.Compression.ZipFile.Open(
+                targetPath, System.IO.Compression.ZipArchiveMode.Create);
+
+            // 日志（桥接正在写这些文件，必须用共享读打开）
+            if (Directory.Exists(_settings.RuntimeTempDir))
+            {
+                foreach (var file in Directory.EnumerateFiles(_settings.RuntimeTempDir, "*", SearchOption.TopDirectoryOnly))
+                {
+                    var info = new FileInfo(file);
+                    if (info.Length > 20 * 1024 * 1024)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        using var source = new FileStream(file, FileMode.Open, FileAccess.Read,
+                            FileShare.ReadWrite | FileShare.Delete);
+                        var entry = zip.CreateEntry("logs/" + info.Name,
+                            System.IO.Compression.CompressionLevel.Optimal);
+                        using var destination = entry.Open();
+                        source.CopyTo(destination);
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"跳过日志 {info.Name}：{ex.Message}");
+                    }
+                }
+            }
+
+            // 脱敏配置
+            var configJson = "{}";
+            try
+            {
+                if (File.Exists(_settings.ConfigPath))
+                {
+                    configJson = RedactConfig(File.ReadAllText(_settings.ConfigPath));
+                }
+            }
+            catch
+            {
+            }
+            WriteEntry(zip, "config.redacted.json", configJson);
+
+            // 系统信息
+            var info2 = new StringBuilder();
+            info2.AppendLine($"时间: {DateTime.Now:O}");
+            info2.AppendLine($"应用版本: {Assembly.GetExecutingAssembly().GetName().Version}");
+            info2.AppendLine($"OS: {Environment.OSVersion.VersionString} (build {Environment.OSVersion.Version.Build})");
+            info2.AppendLine($"64位进程: {Environment.Is64BitProcess}");
+            info2.AppendLine($".NET: {Environment.Version}");
+            info2.AppendLine($"程序目录: {AppContext.BaseDirectory}");
+            info2.AppendLine($"项目目录: {_projectRoot}");
+            info2.AppendLine($"配置: {_settings.ConfigPath}");
+            info2.AppendLine($"便携模式: {_settings.IsPortable}");
+            info2.AppendLine($"桥接端口: {_settings.BridgePort} / 监听: {_settings.ListenHost}");
+            info2.AppendLine($"CDP 端口: {_settings.CdpPort}（监听中: {await NetProbe.PortOpenAsync(_settings.CdpPort)}）");
+            info2.AppendLine($"桥接端口监听中: {await NetProbe.PortOpenAsync(_settings.BridgePort)}");
+            info2.AppendLine($"桥接进程 PID: {_bridge.ProcessId}");
+            info2.AppendLine($"WorkBuddy 主程序: {_settings.WorkBuddyExePath}");
+            info2.AppendLine($"WorkBuddy 版本: {WorkBuddyLocator.DescribeInstalledVersion(_settings.WorkBuddyExePath)}");
+            info2.AppendLine($"node: {BridgeHost.ResolveNodeExecutable(_projectRoot)}");
+            WriteEntry(zip, "system.txt", info2.ToString());
+
+            AppendLog("诊断包已导出：" + targetPath);
+            OpenFolder(targetDir);
+            SetStatus(InfoBarSeverity.Success, "诊断包已导出", targetPath);
+        }
+        catch (Exception ex)
+        {
+            // 别把半成品留在桌面
+            try
+            {
+                if (File.Exists(targetPath)) File.Delete(targetPath);
+            }
+            catch
+            {
+            }
+
+            AppendLog("导出诊断包失败：" + ex.Message);
+            SetStatus(InfoBarSeverity.Error, "导出失败", ex.Message);
+        }
+    }
+
+    private static void WriteEntry(System.IO.Compression.ZipArchive zip, string name, string content)
+    {
+        var entry = zip.CreateEntry(name, System.IO.Compression.CompressionLevel.Optimal);
+        using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+        writer.Write(content);
+    }
+
+    private static string RedactConfig(string json)
+    {
+        try
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(json);
+            if (node is not System.Text.Json.Nodes.JsonObject obj)
+            {
+                return "{}";
+            }
+
+            foreach (var key in obj.Select(pair => pair.Key).ToList())
+            {
+                // 只打码字符串型敏感字段；布尔开关名里带 "Secrets" 不代表它本身敏感。
+                if (obj[key]?.GetValueKind() != System.Text.Json.JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                if (key.Contains("password", StringComparison.OrdinalIgnoreCase) ||
+                    key.Contains("token", StringComparison.OrdinalIgnoreCase) ||
+                    key.Contains("apikey", StringComparison.OrdinalIgnoreCase) ||
+                    key.Contains("secret", StringComparison.OrdinalIgnoreCase))
+                {
+                    obj[key] = "***";
+                }
+            }
+
+            return obj.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            return "{}";
+        }
+    }
 
     private void OpenFolder(string path)
     {

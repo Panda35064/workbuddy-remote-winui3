@@ -10,6 +10,23 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
+        UnhandledException += OnUnhandledException;
+    }
+
+    /// <summary>XAML 层的未处理异常直接写文件，避免"一闪而过"没有任何线索。</summary>
+    private static void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WorkBuddyRemote");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "crash.log"),
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {e.Message}{Environment.NewLine}{e.Exception}{Environment.NewLine}{Environment.NewLine}");
+        }
+        catch
+        {
+        }
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)

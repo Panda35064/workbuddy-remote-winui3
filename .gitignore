@@ -1,6 +1,7 @@
 node_modules/
 output/
 dist/
+build/
 *.log
 
 # 控制台构建产物

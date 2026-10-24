@@ -1,0 +1,90 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 2.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: 解析版本号
+        id: version
+        shell: pwsh
+        run: |
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $pkg = "${{ inputs.version }}"
+          } elseif ($tag -ne "v$pkg") {
+            Write-Host "::error::tag $tag 与 package.json 版本 $pkg 不一致，先改 package.json 再打 tag"
+            exit 1
+          }
+          "value=$pkg" >> $env:GITHUB_OUTPUT
+
+      - name: 构建双包 + 安装器 + 校验和
+        shell: pwsh
+        run: ./scripts/build-release.ps1 -Version ${{ steps.version.outputs.value }}
+
+      - name: 冒烟（桥接 /healthz）
+        shell: pwsh
+        env:
+          WORKBUDDY_ALLOW_MISSING_ASAR: "1"
+        run: |
+          foreach ($name in @("http_proxy", "https_proxy", "no_proxy", "all_proxy")) {
+            if (Test-Path "Env:$name") { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+          }
+          $proc = Start-Process -FilePath "node" -ArgumentList @("bridge/main.mjs","--port","8799") -PassThru -RedirectStandardOutput smoke.out.log -RedirectStandardError smoke.err.log
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ($proc.HasExited) { break }
+              try {
+                $res = Invoke-WebRequest -Uri "http://127.0.0.1:8799/healthz" -UseBasicParsing -TimeoutSec 3
+                if ($res.StatusCode -eq 200) { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { Get-Content smoke.out.log -Tail 30; Get-Content smoke.err.log -Tail 30; exit 1 }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: 发布 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = "${{ steps.version.outputs.value }}"
+          $assets = Get-ChildItem dist -File | ForEach-Object { $_.FullName }
+          $notes = @(
+            "WorkBuddy Remote $v",
+            "",
+            "- 安装版（推荐）：WorkBuddyRemote-$v-setup.exe（自包含，无需另装 .NET / Node）",
+            "- 精简版：WorkBuddyRemote-$v-slim-setup.exe（需要 .NET 10 桌面运行时与 Windows App Runtime）",
+            "- 便携版：WorkBuddyRemote-$v-portable.zip（配置写在程序目录）",
+            "",
+            "未签名，首次运行可能触发 SmartScreen 提示；校验值见 checksums.txt。",
+            "本项目通过 CDP 桥接本机 WorkBuddy，部分杀软可能误报，请核对 SHA256 与源码。"
+          ) -join "`n"
+          gh release create "v$v" --title "WorkBuddy Remote $v" --notes $notes $assets

@@ -6,6 +6,8 @@ internal static class StartupShortcut
 {
     private const string ShortcutName = "WorkBuddy Remote 控制台.lnk";
     private const string LegacyShortcutName = "WorkBuddy Remote.lnk";
+    // 安装包用纯 ASCII 名字创建启动项，避免安装器脚本里的中文编码问题。
+    private const string InstallerShortcutName = "WorkBuddyRemote.lnk";
 
     private static string StartupFolder =>
         Environment.GetFolderPath(Environment.SpecialFolder.Startup);
@@ -14,7 +16,10 @@ internal static class StartupShortcut
 
     private static string LegacyShortcutPath => Path.Combine(StartupFolder, LegacyShortcutName);
 
-    public static bool IsEnabled() => File.Exists(ShortcutPath) || File.Exists(LegacyShortcutPath);
+    private static string InstallerShortcutPath => Path.Combine(StartupFolder, InstallerShortcutName);
+
+    public static bool IsEnabled() =>
+        File.Exists(ShortcutPath) || File.Exists(LegacyShortcutPath) || File.Exists(InstallerShortcutPath);
 
     public static void Apply(bool enabled)
     {
@@ -22,6 +27,7 @@ internal static class StartupShortcut
         {
             Delete(ShortcutPath);
             Delete(LegacyShortcutPath);
+            Delete(InstallerShortcutPath);
             return;
         }
 
@@ -61,8 +67,9 @@ internal static class StartupShortcut
             }
         }
 
-        // 迁移：删掉旧 WinForms 控制台的启动项，避免开机拉起两个控制台。
+        // 迁移：删掉旧 WinForms 控制台和安装器写的启动项，避免开机拉起多个控制台。
         Delete(LegacyShortcutPath);
+        Delete(InstallerShortcutPath);
     }
 
     private static void Delete(string path)
