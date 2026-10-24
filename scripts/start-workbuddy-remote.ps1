@@ -662,7 +662,7 @@ else {
 }
 
 $nodePath = Find-NodeExecutable
-$mainScript = Join-Path $projectRoot "src\main.mjs"
+$mainScript = Join-Path $projectRoot "bridge\main.mjs"
 $bridgeArgs = @(
     $mainScript,
     "--cdp-port", "$CdpPort",

@@ -1,11 +1,11 @@
 {
   "name": "workbuddy-remote-new",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/main.mjs",
-    "check": "node --check src/main.mjs && node --check src/server/bridge-server.mjs && node --check src/bridge/runtime.mjs && node --check src/web/workbuddy-native.mjs && node --check src/server/access-auth.mjs && node --check src/server/password-hash.mjs && node --check src/workspace/service.mjs && node --check src/config.mjs && node --check src/asar.mjs && node --check src/shared.mjs && node --check src/logger.mjs && node --check tools/workbuddy-password-hash.mjs"
+    "start": "node bridge/main.mjs",
+    "check": "node --check bridge/main.mjs && node --check bridge/server/bridge-server.mjs && node --check bridge/bridge/runtime.mjs && node --check bridge/web/workbuddy-native.mjs && node --check bridge/server/access-auth.mjs && node --check bridge/server/password-hash.mjs && node --check bridge/server/fs-browse.mjs && node --check bridge/server/workdaddy-proxy.mjs && node --check bridge/server/workdaddy-panel.mjs && node --check bridge/workspace/service.mjs && node --check bridge/config.mjs && node --check bridge/asar.mjs && node --check bridge/shared.mjs && node --check bridge/logger.mjs && node --check scripts/workbuddy-password-hash.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"

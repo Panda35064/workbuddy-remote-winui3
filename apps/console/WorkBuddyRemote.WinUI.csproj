@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>WorkBuddyRemote.WinUI</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -17,9 +17,7 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <DefaultLanguage>zh-CN</DefaultLanguage>
-    <Version>1.1.0</Version>
-    <FileVersion>1.1.0.0</FileVersion>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <!-- 版本号唯一源是根目录 package.json，由 CI/构建脚本通过 -p:Version 注入 -->
     <AssemblyTitle>WorkBuddy Remote 控制台</AssemblyTitle>
     <Product>WorkBuddy Remote</Product>
     <Description>把本机 WorkBuddy 通过 CDP 桥接映射到浏览器</Description>
@@ -40,9 +38,5 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>Assets\app.png</Link>
     </Content>
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Include="..\launcher\AppHost.cs" Link="Shared\AppHost.cs" />
   </ItemGroup>
 </Project>

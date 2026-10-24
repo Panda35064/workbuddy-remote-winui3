@@ -16,7 +16,7 @@ const RESTART_HELPER_SCRIPT_PATH = path.resolve(
   __dirname,
   "..",
   "..",
-  "tools",
+  "scripts",
   "workbuddy-restart-instance.ps1"
 );
 const CDP_COMMAND_TIMEOUT_MS = 8000;

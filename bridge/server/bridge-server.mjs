@@ -68,10 +68,11 @@ const workBuddyAsar = new AsarArchive(WORKBUDDY_ASAR_PATH);
 // Electron 用 wb-extension://<id>/<path> 从这些目录读扩展资源（内置扩展在
 // app.asar.unpacked 下，安装版扩展在用户数据目录）。浏览器没有该协议，
 // 由 bridge 用 /wb-extension/<id>/<path> 提供同样的内容。
-const WORKBUDDY_RESOURCES_DIR = path.dirname(WORKBUDDY_ASAR_PATH);
+const WORKBUDDY_RESOURCES_DIR = WORKBUDDY_ASAR_PATH ? path.dirname(WORKBUDDY_ASAR_PATH) : "";
 const EXTENSION_RESOURCE_ROOTS = [
-  path.join(WORKBUDDY_RESOURCES_DIR, "app.asar.unpacked", "resources", "extensions"),
-  path.join(WORKBUDDY_RESOURCES_DIR, "extensions"),
+  WORKBUDDY_RESOURCES_DIR &&
+    path.join(WORKBUDDY_RESOURCES_DIR, "app.asar.unpacked", "resources", "extensions"),
+  WORKBUDDY_RESOURCES_DIR && path.join(WORKBUDDY_RESOURCES_DIR, "extensions"),
   path.join(process.env.APPDATA || "", "WorkBuddy", "extensions"),
   path.join(process.env.LOCALAPPDATA || "", "WorkBuddy", "extensions"),
 ].filter((root) => root && !root.startsWith("WorkBuddy"));

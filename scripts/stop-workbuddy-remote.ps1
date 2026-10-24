@@ -19,7 +19,7 @@ function Write-StopLog {
 
 $stoppedIds = @()
 
-# Pass 1: find node.exe processes running this project's src\main.mjs.
+# Pass 1: find node.exe processes running this project's bridge\main.mjs.
 try {
     $targets = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop |
         Where-Object {

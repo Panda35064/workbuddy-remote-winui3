@@ -34,7 +34,7 @@ function main() {
   const { algorithm, password } = parseArgs(process.argv.slice(2));
 
   if (!password) {
-    console.error("Usage: node .\\tools\\workbuddy-password-hash.mjs [--algorithm sha256] <password>");
+    console.error("Usage: node .\\scripts\\workbuddy-password-hash.mjs [--algorithm sha256] <password>");
     console.error(
       `Supported algorithms: ${[...SUPPORTED_PASSWORD_HASH_ALGORITHMS].join(", ")}`
     );

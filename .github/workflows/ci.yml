@@ -1,0 +1,96 @@
+name: ci
+
+on:
+  push:
+    branches: [main, v2]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    name: 桥接（语法 + 冒烟）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 语法检查
+        run: npm run check
+
+      - name: 桥接冒烟（/healthz）
+        shell: pwsh
+        env:
+          # CI 里没有 WorkBuddy，允许桥接降级启动
+          WORKBUDDY_ALLOW_MISSING_ASAR: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = "smoke-bridge.out.log"
+          $err = "smoke-bridge.err.log"
+          $proc = Start-Process -FilePath "node" `
+            -ArgumentList @("bridge/main.mjs", "--port", "8799") `
+            -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ($proc.HasExited) { break }
+              try {
+                $res = Invoke-WebRequest -Uri "http://127.0.0.1:8799/healthz" `
+                  -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+                if ($res.StatusCode -eq 200) { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) {
+              Write-Host "::error::桥接冒烟失败，/healthz 未返回 200"
+              if (Test-Path $out) { Get-Content $out -Tail 40 }
+              if (Test-Path $err) { Get-Content $err -Tail 40 }
+              exit 1
+            }
+            Write-Host "桥接就绪：$($res.Content)"
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+  console:
+    name: 控制台（dotnet build）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: 读取版本号
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: 构建
+        shell: pwsh
+        run: >
+          dotnet build apps/console/WorkBuddyRemote.WinUI.csproj
+          -c Release -p:Platform=x64 -p:Version=${{ steps.version.outputs.value }}
+          --nologo
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-win-x64
+          path: |
+            apps/console/bin/x64/Release/net10.0-windows10.0.19041.0/
+            !apps/console/bin/x64/Release/net10.0-windows10.0.19041.0/**/*.pdb
+          if-no-files-found: error

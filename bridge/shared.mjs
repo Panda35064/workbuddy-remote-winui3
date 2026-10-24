@@ -93,13 +93,23 @@ function resolveWorkBuddyAsarPath() {
     return path.resolve(envAsar);
   }
 
+  // 仅 CI / 纯冒烟场景使用：没有 WorkBuddy 时也允许桥接起来，静态资源类接口按 404 处理。
+  // 生产环境不设这个变量，保持"找不到 WorkBuddy 就直接失败"的显式报错。
+  const allowMissing = process.env.WORKBUDDY_ALLOW_MISSING_ASAR === "1";
+
   const exePath = resolveWorkBuddyExePath();
   if (!exePath) {
+    if (allowMissing) {
+      return "";
+    }
     throw new Error("WORKBUDDY_EXE_PATH is not set and WorkBuddy.exe was not found.");
   }
 
   const asarPath = path.join(path.dirname(exePath), "resources", "app.asar");
   if (!existsSync(asarPath)) {
+    if (allowMissing) {
+      return "";
+    }
     throw new Error(`WorkBuddy app.asar was not found: ${asarPath}`);
   }
   return asarPath;

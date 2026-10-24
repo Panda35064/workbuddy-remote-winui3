@@ -22,6 +22,13 @@ class AsarArchive {
   }
 
   async load() {
+    // 空路径 = 没有可读的 app.asar（CI / 冒烟）。当作空归档，所有查询都返回 404。
+    if (!this.archivePath) {
+      this.header = { files: {} };
+      this.archiveStats = { size: 0, mtime: 0, mtimeMs: 0 };
+      return;
+    }
+
     const stats = await fs.stat(this.archivePath);
     if (
       this.header &&
