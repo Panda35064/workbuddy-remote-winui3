@@ -8,6 +8,14 @@ const LOGOUT_PATH = "/logout";
 const SESSION_COOKIE_NAME = "workbuddy_remote_session";
 const SESSION_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
+// 图标必须匿名可取：浏览器会在登录页（以及首次导航时）主动请求 favicon，
+// 这类请求没有 Cookie，若被 401 拦下，标签页就一直显示默认地球图标。
+const ANONYMOUS_ASSET_PATHS = new Set([
+  "/favicon.ico",
+  "/favicon.png",
+  "/apple-touch-icon.png",
+  "/apple-touch-icon-precomposed.png",
+]);
 
 function getLoginPageStrings(locale) {
   const normalizedLocale = String(
@@ -150,6 +158,9 @@ function renderLoginPage({ locale, errorMessage = "", nextPath = "/agent-manager
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>${escapeHtml(strings.title)}</title>
     <style>
       :root {
@@ -251,7 +262,8 @@ class BridgeAccessAuth {
       pathname === "/healthz" ||
       pathname === "/readyz" ||
       pathname === LOGIN_PATH ||
-      pathname === LOGOUT_PATH
+      pathname === LOGOUT_PATH ||
+      ANONYMOUS_ASSET_PATHS.has(pathname)
     );
   }
 

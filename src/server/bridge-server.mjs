@@ -1,8 +1,9 @@
 import http from "node:http";
 import https from "node:https";
+import os from "node:os";
 import path from "node:path";
 import { createReadStream } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 
@@ -25,6 +26,8 @@ import {
   renderWorkBuddyNativeShimJs,
 } from "../web/workbuddy-native.mjs";
 import { createBridgeAccessAuth } from "./access-auth.mjs";
+import { handleWorkDaddyRequest } from "./workdaddy-proxy.mjs";
+import { listDirectory, listRoots, makeDirectory } from "./fs-browse.mjs";
 import { loadBridgeUiConfig, loadConfig } from "../config.mjs";
 import {
   createWorkspaceFolder,
@@ -41,6 +44,18 @@ import {
 const HTML_CACHE_CONTROL = "no-cache";
 const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const REVALIDATED_STATIC_CACHE_CONTROL = "public, max-age=0, must-revalidate";
+const FAVICON_CACHE_CONTROL = "public, max-age=86400";
+const FAVICON_PATHS = new Set([
+  "/favicon.ico",
+  "/favicon.png",
+  "/apple-touch-icon.png",
+  "/apple-touch-icon-precomposed.png",
+]);
+const FAVICON_LINK_TAGS = [
+  '<link rel="icon" href="/favicon.ico" sizes="any">',
+  '<link rel="icon" type="image/png" href="/favicon.png">',
+  '<link rel="apple-touch-icon" href="/apple-touch-icon.png">',
+].join("");
 const COMPRESSIBLE_EXTENSIONS = new Set([".html", ".js", ".mjs", ".css", ".json", ".svg"]);
 const MAX_COMPRESSED_STATIC_ASSET_BYTES = 32 * 1024 * 1024;
 const BROWSER_WS_MAX_PAYLOAD_BYTES = readPositiveIntegerEnv(
@@ -1233,12 +1248,130 @@ function getAccessUrls(options) {
   return [`http://${options.listenHost}:${options.listenPort}/agent-manager/`];
 }
 
+function withFaviconLinks(html) {
+  if (typeof html !== "string" || !html) {
+    return html;
+  }
+  if (/rel=["'](?:shortcut )?icon["']/iu.test(html)) {
+    return html;
+  }
+  const headMatch = /<head[^>]*>/iu.exec(html);
+  if (!headMatch) {
+    return FAVICON_LINK_TAGS + html;
+  }
+  const insertAt = headMatch.index + headMatch[0].length;
+  return html.slice(0, insertAt) + FAVICON_LINK_TAGS + html.slice(insertAt);
+}
+
+async function listWindowsDrives() {
+  const drives = [];
+  const letters = "CDEFGHIJKLMNOPQRSTUVWXYZ";
+  await Promise.all(
+    [...letters].map(async (letter) => {
+      const root = `${letter}:\\`;
+      try {
+        const info = await stat(root);
+        if (info.isDirectory()) {
+          drives.push({ name: `${letter}:`, path: root });
+        }
+      } catch {
+        // 盘符不存在或不可访问
+      }
+    })
+  );
+  return drives.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function buildRemoteFsRoots() {
+  const home = os.homedir();
+  const quick = [{ name: "主目录", path: home }];
+  for (const [label, folder] of [
+    ["桌面", "Desktop"],
+    ["文档", "Documents"],
+    ["下载", "Downloads"],
+    ["图片", "Pictures"],
+    ["视频", "Videos"],
+  ]) {
+    const target = path.join(home, folder);
+    try {
+      if ((await stat(target)).isDirectory()) {
+        quick.push({ name: label, path: target });
+      }
+    } catch {
+      // 该用户目录不存在
+    }
+  }
+  return { home, quick, drives: await listWindowsDrives() };
+}
+
+async function readRemoteDirectory(targetPath) {
+  const dir = targetPath && String(targetPath).trim() ? path.resolve(String(targetPath).trim()) : os.homedir();
+  const dirents = await readdir(dir, { withFileTypes: true });
+  const entries = [];
+  for (const dirent of dirents) {
+    const full = path.join(dir, dirent.name);
+    let isDir = dirent.isDirectory();
+    let size = 0;
+    let mtime = 0;
+    try {
+      const info = await stat(full);
+      isDir = info.isDirectory();
+      size = info.size;
+      mtime = info.mtimeMs;
+    } catch {
+      // 权限不足的条目也列出来，只是没有大小/时间
+    }
+    entries.push({ name: dirent.name, path: full, isDir, size, mtime });
+  }
+  entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name, "zh-CN"));
+  const parent = path.dirname(dir);
+  return { path: dir, parent: parent === dir ? null : parent, entries };
+}
+
+function summarizeHttpChannelArgs(args) {
+  if (!Array.isArray(args)) {
+    return args;
+  }
+  return args.slice(0, 3).map((item) => {
+    if (typeof item === "string") {
+      return item.length > 300 ? item.slice(0, 300) + "…" : item;
+    }
+    if (!item || typeof item !== "object") {
+      return item;
+    }
+    const out = {};
+    for (const [key, value] of Object.entries(item)) {
+      if (/authorization|cookie|token/i.test(key)) {
+        out[key] = "[redacted]";
+        continue;
+      }
+      if (typeof value === "string") {
+        out[key] = value.length > 400 ? value.slice(0, 400) + "…" : value;
+      } else if (value && typeof value === "object") {
+        try {
+          const json = JSON.stringify(value);
+          out[key] = json.length > 400 ? json.slice(0, 400) + "…" : json;
+        } catch {
+          out[key] = "[object]";
+        }
+      } else {
+        out[key] = value;
+      }
+    }
+    return out;
+  });
+}
+
 function createRequestHandler(runtime, auth) {
   return async (req, res) => {
     try {
       const requestUrl = new URL(req.url || "/", "http://bridge.local");
 
       if (await auth.handleRequest(req, res, requestUrl)) {
+        return;
+      }
+
+      if (await handleWorkDaddyRequest(req, res, requestUrl)) {
         return;
       }
 
@@ -1428,8 +1561,13 @@ function createRequestHandler(runtime, auth) {
         return;
       }
 
-      if (requestUrl.pathname === "/favicon.ico") {
-        await sendAsarAsset(req, res, workBuddyAsar, "resources/icon.png", IMMUTABLE_CACHE_CONTROL);
+      // 站点图标：优先用 WorkBuddy 自带的 .ico（Content-Type 正确），
+      // 同时提供 PNG 与 apple-touch-icon，避免部分浏览器/端口映射代理
+      // 因为 MIME 不符或缺少 apple-touch-icon 而显示成空白页图标。
+      if (FAVICON_PATHS.has(requestUrl.pathname)) {
+        const iconPath =
+          requestUrl.pathname === "/favicon.ico" ? "resources/icon.ico" : "resources/icon.png";
+        await sendAsarAsset(req, res, workBuddyAsar, iconPath, FAVICON_CACHE_CONTROL);
         return;
       }
 
@@ -1447,15 +1585,43 @@ function createRequestHandler(runtime, auth) {
         text(
           res,
           200,
-          renderWorkBuddyNativeHtml(html.toString("utf8")),
+          renderWorkBuddyNativeHtml(withFaviconLinks(html.toString("utf8"))),
           "text/html; charset=utf-8",
           HTML_CACHE_CONTROL
         );
         return;
       }
 
-      if (requestUrl.pathname === "/bridge/workbuddy-native-shim.js") {
-        const [methods, version, locale, features, bridgeUiConfig] = await Promise.all([
+      // 服务端目录浏览：给网页端“选择文件夹”对话框用。
+      if (requestUrl.pathname.startsWith("/bridge/fs/")) {
+        try {
+          if (requestUrl.pathname === "/bridge/fs/roots") {
+            json(res, 200, { ok: true, roots: await listRoots() });
+            return;
+          }
+          if (requestUrl.pathname === "/bridge/fs/list") {
+            const target = requestUrl.searchParams.get("path") || "";
+            const listing = await listDirectory(target);
+            json(res, 200, { ok: true, ...listing });
+            return;
+          }
+          if (requestUrl.pathname === "/bridge/fs/mkdir" && req.method === "POST") {
+            const payload = await readJsonBody(req);
+            const created = await makeDirectory(payload.path, payload.name);
+            json(res, 200, { ok: true, path: created });
+            return;
+          }
+          json(res, 404, { ok: false, error: "unknown fs endpoint" });
+        } catch (error) {
+          json(res, 400, {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+
+      if (requestUrl.pathname === "/bridge/workbuddy-native-shim.js") {        const [methods, version, locale, features, bridgeUiConfig] = await Promise.all([
           readShimMetadata("methods", () => runtime.getBuddyApiMethods(), []),
           readShimMetadata("version", () => runtime.getWorkBuddyVersion(), ""),
           readShimMetadata("locale", () => runtime.getWorkBuddyLocale(), ""),
@@ -1566,10 +1732,34 @@ function attachWebSocketServer(server, runtime, auth) {
 
       try {
         if (message.type === "desktop-host-invoke") {
+          logger.info("desktop_host.invoke", "Forwarding desktop host channel", {
+            channel: message.channel,
+            via: message.via || "",
+            argCount: Array.isArray(message.args) ? message.args.length : 0,
+          });
+          if (String(message.channel || "").startsWith("wb:http:")) {
+            logger.debug("desktop_host.http", "Forwarding host http channel", {
+              channel: message.channel,
+              args: summarizeHttpChannelArgs(message.args),
+            });
+          }
           const result = await runtime.invokeDesktopHost(
             message.channel,
             message.args || [],
             message.via || ""
+          );
+          runtime.sendToSocket(socket, {
+            id: message.id,
+            ok: true,
+            result,
+          });
+          return;
+        }
+
+        if (message.type === "desktop-terminal-call") {
+          const result = await runtime.callDesktopTerminal(
+            message.method,
+            message.args || []
           );
           runtime.sendToSocket(socket, {
             id: message.id,
@@ -1596,6 +1786,17 @@ function attachWebSocketServer(server, runtime, auth) {
         }
 
         if (message.type === "daemon-send") {
+          const frame = message.frame || {};
+          let preview = "";
+          try {
+            preview = String(frame.json || "").slice(0, 220);
+          } catch {
+            preview = "";
+          }
+          logger.debug("daemon.send", "Browser sent daemon frame", {
+            kind: frame.kind || "",
+            preview,
+          });
           const result = await runtime.sendDaemonFrame(socket, message.frame);
           if (message.id) {
             runtime.sendToSocket(socket, { id: message.id, ok: true, result });

@@ -989,289 +989,430 @@ function renderWorkBuddyNativeShimJs({
       return undefined;
     }
 
-    const roots = await fetchWorkspaceRoots();
-    const preferred = await resolvePreferredWorkspaceSelection(roots, defaultPath);
+    function fsRequest(pathname, options) {
+      return fetch("/bridge/fs" + pathname, Object.assign({ credentials: "same-origin" }, options || {}))
+        .then(function (response) {
+          return response
+            .json()
+            .catch(function () {
+              return { ok: false, error: "invalid response" };
+            })
+            .then(function (body) {
+              if (!response.ok || body.ok === false) {
+                throw new Error((body && body.error) || "HTTP " + response.status);
+              }
+              return body;
+            });
+        });
+    }
 
-    return new Promise((resolve, reject) => {
-      let selectedRootPath = preferred.rootPath;
-      let selectedFolderPath = preferred.folderPath;
-      let folders = [];
-      let filteredFolders = [];
-      let loading = false;
+    function pad2(value) {
+      return (value < 10 ? "0" : "") + value;
+    }
 
-      const overlay = document.createElement("div");
-      overlay.style.cssText = "position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px;";
+    function formatTime(ms) {
+      if (!ms) return "";
+      var date = new Date(ms);
+      return (
+        date.getFullYear() +
+        "/" +
+        pad2(date.getMonth() + 1) +
+        "/" +
+        pad2(date.getDate()) +
+        " " +
+        pad2(date.getHours()) +
+        ":" +
+        pad2(date.getMinutes())
+      );
+    }
 
-      const panel = document.createElement("div");
-      panel.style.cssText = "width:min(860px,100%);max-height:min(820px,calc(100vh - 48px));overflow:hidden;border-radius:16px;background:#151823;color:#eef2ff;box-shadow:0 20px 60px rgba(0,0,0,.4);display:flex;flex-direction:column;font:14px/1.45 'Segoe UI',sans-serif;";
+    function formatSize(bytes) {
+      var value = Number(bytes) || 0;
+      if (!value) return "";
+      var units = ["B", "KB", "MB", "GB", "TB"];
+      var index = 0;
+      while (value >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+      }
+      return (index === 0 ? String(value) : value.toFixed(value >= 10 ? 0 : 1)) + " " + units[index];
+    }
+
+    function splitPath(target) {
+      var separator = String.fromCharCode(92);
+      var normalized = String(target || "").split("/").join(separator);
+      var parts = normalized.split(separator).filter(function (item) {
+        return item.length > 0;
+      });
+      return parts;
+    }
+
+    var roots = [];
+    try {
+      roots = (await fsRequest("/roots")).roots || [];
+    } catch (error) {
+      roots = [];
+    }
+
+    var startPath = String(defaultPath || "").trim();
+    if (!startPath) {
+      try {
+        startPath = localStorage.getItem("__workbuddy_remote_last_folder__") || "";
+      } catch (error) {
+        startPath = "";
+      }
+    }
+    if (!startPath) {
+      startPath = roots.length ? roots[0].path : "";
+    }
+
+    return new Promise(function (resolve) {
+      var state = {
+        path: startPath,
+        parent: "",
+        entries: [],
+        selected: "",
+        loading: false,
+        error: "",
+      };
+
+      var overlay = document.createElement("div");
+      overlay.style.cssText =
+        "position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.42);display:flex;" +
+        "align-items:center;justify-content:center;padding:24px;font:13px/1.4 'Segoe UI',sans-serif;";
+
+      var panel = document.createElement("div");
+      panel.style.cssText =
+        "width:min(980px,100%);height:min(640px,100%);display:flex;flex-direction:column;overflow:hidden;" +
+        "border-radius:10px;background:#fff;color:#1f2430;box-shadow:0 24px 70px rgba(0,0,0,.35);";
       overlay.appendChild(panel);
 
-      const title = document.createElement("div");
-      title.textContent = t("chooseWorkspaceOnHost");
-      title.style.cssText = "padding:20px 24px 8px;font-size:20px;font-weight:700;";
-      panel.appendChild(title);
-
-      const subtitle = document.createElement("div");
-      subtitle.textContent = t("chooseWorkspaceSubtitle");
-      subtitle.style.cssText = "padding:0 24px 16px;color:#9aa4c7;font-size:13px;";
-      panel.appendChild(subtitle);
-
-      const body = document.createElement("div");
-      body.style.cssText = "padding:0 24px 20px;display:flex;flex-direction:column;gap:14px;overflow:auto;";
-      panel.appendChild(body);
-
-      const topRow = document.createElement("div");
-      topRow.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:12px;align-items:end;";
-      body.appendChild(topRow);
-
-      const rootField = document.createElement("label");
-      rootField.style.cssText = "display:flex;flex-direction:column;gap:6px;min-width:0;";
-      topRow.appendChild(rootField);
-      const rootLabel = document.createElement("span");
-      rootLabel.textContent = t("drive");
-      rootLabel.style.cssText = "font-size:12px;color:#9aa4c7;";
-      rootField.appendChild(rootLabel);
-      const rootSelect = document.createElement("select");
-      rootSelect.style.cssText = "height:40px;border:1px solid #39415d;border-radius:10px;background:#0f1320;color:#eef2ff;padding:0 12px;";
-      rootField.appendChild(rootSelect);
-      const rootPlaceholder = document.createElement("option");
-      rootPlaceholder.value = "";
-      rootPlaceholder.textContent = t("selectDrive");
-      rootSelect.appendChild(rootPlaceholder);
-      for (const root of roots) {
-        const option = document.createElement("option");
-        option.value = root.path;
-        option.textContent = root.label || root.path;
-        rootSelect.appendChild(option);
+      function el(tag, text, css) {
+        var node = document.createElement(tag);
+        if (text !== undefined && text !== null) node.textContent = text;
+        if (css) node.style.cssText = css;
+        return node;
       }
-      rootSelect.value = selectedRootPath;
 
-      const workspaceField = document.createElement("label");
-      workspaceField.style.cssText = "display:flex;flex-direction:column;gap:6px;min-width:0;";
-      topRow.appendChild(workspaceField);
-      const workspaceLabel = document.createElement("span");
-      workspaceLabel.textContent = t("workspace");
-      workspaceLabel.style.cssText = "font-size:12px;color:#9aa4c7;";
-      workspaceField.appendChild(workspaceLabel);
-      const workspaceSelect = document.createElement("select");
-      workspaceSelect.style.cssText = "height:40px;border:1px solid #39415d;border-radius:10px;background:#0f1320;color:#eef2ff;padding:0 12px;";
-      workspaceField.appendChild(workspaceSelect);
-      const createWorkspaceOption = document.createElement("option");
-      createWorkspaceOption.value = "__create_workspace__";
-      createWorkspaceOption.textContent = t("createFolder");
-
-      const refreshButton = document.createElement("button");
-      refreshButton.type = "button";
-      refreshButton.textContent = t("refresh");
-      refreshButton.style.cssText = "height:40px;padding:0 16px;border:1px solid #39415d;border-radius:10px;background:#101528;color:#d9e0ff;cursor:pointer;";
-      topRow.appendChild(refreshButton);
-
-      const workspaceHint = document.createElement("div");
-      workspaceHint.style.cssText = "padding:10px 14px;border:1px solid #2c3350;border-radius:10px;background:#11162a;color:#9aa4c7;";
-      workspaceHint.textContent = t("workspaceActionHint");
-      body.appendChild(workspaceHint);
-
-      const searchField = document.createElement("label");
-      searchField.style.cssText = "display:flex;flex-direction:column;gap:6px;";
-      body.appendChild(searchField);
-      const searchLabel = document.createElement("span");
-      searchLabel.textContent = t("searchWorkspaces");
-      searchLabel.style.cssText = "font-size:12px;color:#9aa4c7;";
-      searchField.appendChild(searchLabel);
-      const searchInput = document.createElement("input");
-      searchInput.type = "search";
-      searchInput.placeholder = t("searchWorkspacePlaceholder");
-      searchInput.style.cssText = "height:40px;border:1px solid #39415d;border-radius:10px;background:#0f1320;color:#eef2ff;padding:0 12px;outline:none;";
-      searchField.appendChild(searchInput);
-
-      const listWrapper = document.createElement("div");
-      listWrapper.style.cssText = "min-height:260px;max-height:360px;overflow:auto;border:1px solid #2c3350;border-radius:12px;background:#0d1120;padding:8px;display:flex;flex-direction:column;gap:8px;";
-      body.appendChild(listWrapper);
-      const emptyState = document.createElement("div");
-      emptyState.style.cssText = "padding:36px 12px;text-align:center;color:#7d89b4;font-size:13px;";
-
-      const footer = document.createElement("div");
-      footer.style.cssText = "padding:16px 24px 24px;display:flex;justify-content:flex-end;gap:10px;border-top:1px solid #232a42;";
-      panel.appendChild(footer);
-      const cancelButton = document.createElement("button");
-      cancelButton.type = "button";
-      cancelButton.textContent = t("cancel");
-      cancelButton.style.cssText = "height:40px;padding:0 16px;border:1px solid #39415d;border-radius:10px;background:#101528;color:#d9e0ff;cursor:pointer;";
-      footer.appendChild(cancelButton);
-      const confirmButton = document.createElement("button");
-      confirmButton.type = "button";
-      confirmButton.textContent = t("chooseThisFolder");
-      confirmButton.style.cssText = "height:40px;padding:0 16px;border:none;border-radius:10px;background:#6ea8fe;color:#09111f;font-weight:700;cursor:pointer;";
-      footer.appendChild(confirmButton);
-
-      const cleanup = () => {
-        document.removeEventListener("keydown", onKeyDown, true);
+      function close(result) {
         overlay.remove();
-      };
-      const finish = (result) => {
-        cleanup();
+        document.removeEventListener("keydown", onKeydown, true);
         resolve(result);
-      };
-      const fail = (error) => {
-        cleanup();
-        reject(error);
-      };
+      }
 
-      const getFilteredFolders = () => {
-        const keyword = searchInput.value.trim().toLowerCase();
-        return keyword
-          ? folders.filter((folder) => folder.name.toLowerCase().includes(keyword))
-          : [...folders];
-      };
-
-      const renderWorkspaceOptions = () => {
-        workspaceSelect.replaceChildren();
-        const placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = loading ? t("loadingWorkspaces") : t("selectWorkspace");
-        workspaceSelect.appendChild(placeholder);
-        for (const folder of getFilteredFolders()) {
-          const option = document.createElement("option");
-          option.value = folder.path;
-          option.textContent = folder.name;
-          workspaceSelect.appendChild(option);
-        }
-        workspaceSelect.appendChild(createWorkspaceOption);
-        workspaceSelect.value = folders.some((folder) => folder.path === selectedFolderPath) ? selectedFolderPath : "";
-      };
-
-      const applyFilter = () => {
-        filteredFolders = getFilteredFolders();
-        renderWorkspaceOptions();
-        listWrapper.replaceChildren();
-        if (!selectedRootPath) {
-          emptyState.textContent = t("selectDriveFirst");
-          listWrapper.appendChild(emptyState);
-        } else if (loading) {
-          emptyState.textContent = t("scanningWorkspaceRoot");
-          listWrapper.appendChild(emptyState);
-        } else if (filteredFolders.length === 0) {
-          emptyState.textContent = folders.length === 0 ? t("noWorkspaceOnDrive") : t("noMatchingWorkspace");
-          listWrapper.appendChild(emptyState);
-        } else {
-          for (const folder of filteredFolders) {
-            const item = document.createElement("button");
-            item.type = "button";
-            item.style.cssText = "display:flex;flex-direction:column;align-items:flex-start;gap:6px;width:100%;padding:12px 14px;border:1px solid " + (folder.path === selectedFolderPath ? "#6ea8fe" : "#2b3453") + ";border-radius:10px;background:" + (folder.path === selectedFolderPath ? "#18253d" : "#12182b") + ";color:#eef2ff;cursor:pointer;text-align:left;";
-            const name = document.createElement("span");
-            name.textContent = folder.name;
-            name.style.cssText = "display:block;font-weight:700;font-size:15px;line-height:1.35;";
-            item.appendChild(name);
-            const folderPath = document.createElement("span");
-            folderPath.textContent = folder.path;
-            folderPath.style.cssText = "display:block;font-size:12px;line-height:1.45;color:#9aa4c7;word-break:break-all;";
-            item.appendChild(folderPath);
-            item.addEventListener("click", () => {
-              selectedFolderPath = folder.path;
-              renderWorkspaceOptions();
-              applyFilter();
-            });
-            item.addEventListener("dblclick", () => finish([folder.path]));
-            listWrapper.appendChild(item);
-          }
-        }
-        confirmButton.disabled = loading || !selectedFolderPath;
-        workspaceHint.textContent = selectedFolderPath
-          ? t("currentWorkspace", { path: selectedFolderPath })
-          : selectedRootPath
-            ? t("noWorkspaceAvailable")
-            : t("workspaceActionHint");
-      };
-
-      const setBusy = (busy) => {
-        loading = busy;
-        rootSelect.disabled = busy;
-        workspaceSelect.disabled = busy;
-        searchInput.disabled = busy;
-        refreshButton.disabled = busy || !selectedRootPath;
-        cancelButton.disabled = busy;
-        confirmButton.disabled = busy || !selectedFolderPath;
-      };
-
-      const loadRootFolders = async (rootPath, preferredFolderPath = "") => {
-        selectedRootPath = rootPath || "";
-        selectedFolderPath = "";
-        searchInput.value = "";
-        if (!selectedRootPath) {
-          folders = [];
-          renderWorkspaceOptions();
-          applyFilter();
-          return;
-        }
-        try {
-          localStorage.setItem("__workbuddy_remote_last_workspace_root__", selectedRootPath);
-        } catch {}
-        setBusy(true);
-        folders = [];
-        renderWorkspaceOptions();
-        applyFilter();
-        try {
-          const payload = await fetchWorkspaceFolders(selectedRootPath);
-          folders = payload?.folders || [];
-          selectedFolderPath = preferredFolderPath && folders.some((folder) => folder.path === preferredFolderPath)
-            ? preferredFolderPath
-            : "";
-          workspaceHint.textContent = payload?.workspaceRoot ? t("currentRoot", { path: payload.workspaceRoot }) : t("workspaceRootMissing");
-        } catch (error) {
-          folders = [];
-          workspaceHint.textContent = t("failedLoadDriveContents");
-          window.alert(error instanceof Error ? error.message : String(error));
-        } finally {
-          setBusy(false);
-          renderWorkspaceOptions();
-          applyFilter();
-        }
-      };
-
-      const onKeyDown = (event) => {
+      function onKeydown(event) {
         if (event.key === "Escape") {
           event.preventDefault();
-          finish(undefined);
+          close(undefined);
         }
-      };
+      }
 
-      rootSelect.addEventListener("change", () => loadRootFolders(rootSelect.value).catch(fail));
-      workspaceSelect.addEventListener("change", async () => {
-        if (workspaceSelect.value === "__create_workspace__") {
-          try {
-            const result = await promptAndCreateWorkspace(selectedRootPath);
-            if (result?.path) {
-              await loadRootFolders(selectedRootPath, result.path);
-            }
-          } catch (error) {
-            window.alert(error instanceof Error ? error.message : String(error));
-          } finally {
-            renderWorkspaceOptions();
-          }
+      // ---- header ----
+      var header = el("div", null, "display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #eef0f5;");
+      header.appendChild(el("div", "选择文件夹", "flex:1;font-size:15px;font-weight:600;"));
+      var closeButton = el(
+        "button",
+        "×",
+        "width:28px;height:28px;border:0;border-radius:6px;background:transparent;color:#6b7280;font-size:20px;line-height:1;cursor:pointer;"
+      );
+      closeButton.type = "button";
+      closeButton.addEventListener("click", function () {
+        close(undefined);
+      });
+      header.appendChild(closeButton);
+      panel.appendChild(header);
+
+      // ---- toolbar ----
+      var toolbar = el("div", null, "display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid #f1f3f7;background:#fbfcff;");
+      var upButton = el(
+        "button",
+        "↑ 上一级",
+        "height:30px;padding:0 10px;border:1px solid #dfe3ec;border-radius:6px;background:#fff;color:#374151;cursor:pointer;"
+      );
+      upButton.type = "button";
+      toolbar.appendChild(upButton);
+
+      var pathInput = el(
+        "input",
+        null,
+        "flex:1;height:30px;padding:0 10px;border:1px solid #dfe3ec;border-radius:6px;background:#fff;color:#1f2430;font:13px 'Segoe UI',sans-serif;"
+      );
+      pathInput.type = "text";
+      pathInput.spellcheck = false;
+      toolbar.appendChild(pathInput);
+
+      var refreshButton = el(
+        "button",
+        "刷新",
+        "height:30px;padding:0 10px;border:1px solid #dfe3ec;border-radius:6px;background:#fff;color:#374151;cursor:pointer;"
+      );
+      refreshButton.type = "button";
+      toolbar.appendChild(refreshButton);
+      panel.appendChild(toolbar);
+
+      // ---- body ----
+      var body = el("div", null, "flex:1;display:flex;min-height:0;");
+      panel.appendChild(body);
+
+      var sidebar = el("div", null, "width:190px;border-right:1px solid #f1f3f7;padding:8px 6px;overflow:auto;");
+      body.appendChild(sidebar);
+
+      var main = el("div", null, "flex:1;display:flex;flex-direction:column;min-width:0;");
+      body.appendChild(main);
+
+      var headerRow = el("div", null, "display:flex;align-items:center;height:30px;padding:0 12px;border-bottom:1px solid #f1f3f7;color:#6b7280;font-size:12px;user-select:none;");
+      var colName = el("div", "名称", "flex:1;min-width:0;");
+      var colTime = el("div", "修改日期", "width:150px;");
+      var colType = el("div", "类型", "width:120px;");
+      var colSize = el("div", "大小", "width:90px;text-align:right;");
+      headerRow.appendChild(colName);
+      headerRow.appendChild(colTime);
+      headerRow.appendChild(colType);
+      headerRow.appendChild(colSize);
+      main.appendChild(headerRow);
+
+      var list = el("div", null, "flex:1;overflow:auto;user-select:none;");
+      main.appendChild(list);
+
+      var status = el("div", null, "padding:4px 12px;color:#9aa0ac;font-size:12px;min-height:20px;");
+      main.appendChild(status);
+
+      // ---- footer ----
+      var footer = el("div", null, "display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid #eef0f5;background:#fbfcff;");
+      var folderLabel = el("div", "文件夹:", "color:#4a5164;");
+      footer.appendChild(folderLabel);
+      var folderValue = el(
+        "div",
+        "",
+        "flex:1;min-width:0;height:28px;line-height:28px;padding:0 8px;border:1px solid #dfe3ec;border-radius:6px;background:#fff;" +
+          "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#1f2430;"
+      );
+      footer.appendChild(folderValue);
+
+      function smallButton(text, primary) {
+        var button = el(
+          "button",
+          text,
+          "height:30px;padding:0 14px;border-radius:6px;cursor:pointer;border:1px solid " +
+            (primary ? "#2f5bd6" : "#dfe3ec") +
+            ";background:" +
+            (primary ? "#2f5bd6" : "#fff") +
+            ";color:" +
+            (primary ? "#fff" : "#374151") +
+            ";"
+        );
+        button.type = "button";
+        return button;
+      }
+
+      var newFolderButton = smallButton("新建文件夹");
+      footer.appendChild(newFolderButton);
+      var okButton = smallButton("选择文件夹", true);
+      footer.appendChild(okButton);
+      var cancelButton = smallButton("取消");
+      footer.appendChild(cancelButton);
+      panel.appendChild(footer);
+
+      // ---- behavior ----
+      function renderSidebar() {
+        sidebar.textContent = "";
+
+        function addGroup(title) {
+          sidebar.appendChild(el("div", title, "padding:8px 8px 4px;font-size:12px;color:#9aa0ac;"));
+        }
+
+        function addItem(root) {
+          var active = root.path.toLowerCase() === String(state.path || "").toLowerCase();
+          var icon = root.kind === "drive" ? "💽" : root.kind === "home" ? "🏠" : "📁";
+          var item = el("button", null, "");
+          item.type = "button";
+          item.title = root.path;
+          item.style.cssText =
+            "display:flex;align-items:center;gap:6px;width:100%;text-align:left;padding:6px 8px;margin-bottom:1px;" +
+            "border:0;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" +
+            "background:" + (active ? "#eaf1ff" : "transparent") + ";" +
+            "color:" + (active ? "#1d4ed8" : "#374151") + ";";
+          item.appendChild(el("span", icon, "font-size:12px;"));
+          item.appendChild(el("span", root.label || root.path, "overflow:hidden;text-overflow:ellipsis;"));
+          item.addEventListener("click", function () {
+            navigate(root.path);
+          });
+          item.addEventListener("mouseenter", function () {
+            if (!active) item.style.background = "#f5f7fb";
+          });
+          item.addEventListener("mouseleave", function () {
+            if (!active) item.style.background = "transparent";
+          });
+          sidebar.appendChild(item);
+        }
+
+        var common = roots.filter(function (root) {
+          return root.kind === "home" || root.kind === "special";
+        });
+        var drives = roots.filter(function (root) {
+          return root.kind === "drive";
+        });
+
+        if (common.length) {
+          addGroup("常用位置");
+          common.forEach(addItem);
+        }
+        if (drives.length) {
+          addGroup("此电脑");
+          drives.forEach(addItem);
+        }
+      }
+
+      function renderList() {
+        list.textContent = "";
+        if (state.loading) {
+          list.appendChild(el("div", "正在读取…", "padding:16px;color:#8a8f9c;"));
           return;
         }
-        selectedFolderPath = workspaceSelect.value;
-        applyFilter();
+        if (state.error) {
+          list.appendChild(el("div", state.error, "padding:16px;color:#c0392b;"));
+          return;
+        }
+        if (!state.entries.length) {
+          list.appendChild(el("div", "此文件夹为空", "padding:16px;color:#8a8f9c;"));
+          return;
+        }
+
+        state.entries.forEach(function (entry) {
+          var row = el(
+            "div",
+            null,
+            "display:flex;align-items:center;height:28px;padding:0 12px;border-bottom:1px solid #fafbfd;" +
+              (entry.dir ? "cursor:pointer;" : "color:#8a8f9c;")
+          );
+          if (entry.dir && entry.path === state.selected) {
+            row.style.background = "#eaf1ff";
+          }
+
+          if (entry.dir) {
+            row.addEventListener("mouseenter", function () {
+              if (entry.path !== state.selected) row.style.background = "#f5f8ff";
+            });
+            row.addEventListener("mouseleave", function () {
+              if (entry.path !== state.selected) row.style.background = "";
+            });
+          }
+
+          var nameCell = el("div", null, "flex:1;min-width:0;display:flex;align-items:center;gap:6px;");
+          var icon = el("span", entry.dir ? "📁" : "📄", "font-size:13px;");
+          nameCell.appendChild(icon);
+          var nameText = el("span", entry.name, "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;");
+          nameCell.appendChild(nameText);
+          row.appendChild(nameCell);
+          row.appendChild(el("div", formatTime(entry.mtime), "width:150px;color:#8a8f9c;font-size:12px;"));
+          row.appendChild(el("div", entry.type || "", "width:120px;color:#8a8f9c;font-size:12px;"));
+          row.appendChild(el("div", formatSize(entry.size), "width:90px;text-align:right;color:#8a8f9c;font-size:12px;"));
+
+          if (entry.dir) {
+            row.addEventListener("click", function () {
+              state.selected = entry.path;
+              folderValue.textContent = entry.path;
+              renderList();
+            });
+            row.addEventListener("dblclick", function () {
+              navigate(entry.path);
+            });
+          }
+          list.appendChild(row);
+        });
+      }
+
+      function applyListing(listing) {
+        state.path = listing.path;
+        state.parent = listing.parent || "";
+        state.entries = listing.entries || [];
+        state.loading = false;
+        state.error = "";
+        state.selected = "";
+        pathInput.value = state.path;
+        folderValue.textContent = state.path;
+        upButton.disabled = !state.parent;
+        upButton.style.opacity = state.parent ? "1" : ".45";
+        status.textContent = listing.truncated ? "目录条目过多，只显示前 3000 项。" : "";
+        renderSidebar();
+        renderList();
+      }
+
+      function navigate(target) {
+        if (!target) return;
+        state.loading = true;
+        state.error = "";
+        pathInput.value = target;
+        folderValue.textContent = target;
+        renderList();
+        fsRequest("/list?path=" + encodeURIComponent(target))
+          .then(applyListing)
+          .catch(function (error) {
+            state.loading = false;
+            state.error = "无法打开：" + error.message;
+            renderList();
+          });
+      }
+
+      upButton.addEventListener("click", function () {
+        if (state.parent) navigate(state.parent);
       });
-      refreshButton.addEventListener("click", () => loadRootFolders(rootSelect.value, selectedFolderPath).catch(fail));
-      searchInput.addEventListener("input", applyFilter);
-      cancelButton.addEventListener("click", () => finish(undefined));
-      confirmButton.addEventListener("click", () => {
-        if (selectedFolderPath) {
-          finish([selectedFolderPath]);
+      refreshButton.addEventListener("click", function () {
+        navigate(state.path);
+      });
+      pathInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          navigate(pathInput.value.trim());
         }
       });
-      overlay.addEventListener("click", (event) => {
-        if (event.target === overlay) {
-          finish(undefined);
-        }
+      pathInput.addEventListener("blur", function () {
+        pathInput.value = state.path;
       });
 
-      document.addEventListener("keydown", onKeyDown, true);
+      newFolderButton.addEventListener("click", function () {
+        var name = window.prompt("新建文件夹名称", "新建文件夹");
+        if (!name) return;
+        fsRequest("/mkdir", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: state.path, name: name.trim() }),
+        })
+          .then(function () {
+            navigate(state.path);
+          })
+          .catch(function (error) {
+            window.alert("新建文件夹失败：" + error.message);
+          });
+      });
+
+      okButton.addEventListener("click", function () {
+        var picked = state.selected || state.path;
+        if (!picked) return;
+        try {
+          localStorage.setItem("__workbuddy_remote_last_folder__", picked);
+        } catch (error) {
+          // 忽略存储失败
+        }
+        close([picked]);
+      });
+      cancelButton.addEventListener("click", function () {
+        close(undefined);
+      });
+      overlay.addEventListener("mousedown", function (event) {
+        if (event.target === overlay) close(undefined);
+      });
+
+      document.addEventListener("keydown", onKeydown, true);
       document.body.appendChild(overlay);
-      renderWorkspaceOptions();
-      applyFilter();
-      loadRootFolders(selectedRootPath, selectedFolderPath).catch(fail);
+      renderSidebar();
+      if (state.path) {
+        navigate(state.path);
+      } else {
+        state.loading = false;
+        state.error = "没有可浏览的位置";
+        renderList();
+      }
     });
   }
 
@@ -3930,9 +4071,39 @@ function renderWorkBuddyNativeShimJs({
     }
   }
 
+  // WorkBuddy 桌面端 preload 会把本地终端桥挂在 window.__workbuddyDevtoolsTerminal 上，
+  // 前端 createDesktopTerminalProvider() 直接用它。浏览器里没有 preload，这里同名接管，
+  // 转发给 bridge，由 bridge 经 CDP 打到真实桌面渲染进程（即运行 WorkBuddy 的这台机器）。
+  var DESKTOP_TERMINAL_METHODS = [
+    "create",
+    "list",
+    "close",
+    "rename",
+    "attach",
+    "poll",
+    "input",
+    "resize",
+    "detach",
+  ];
+
+  function installDesktopTerminalBridge() {
+    if (globalThis.__workbuddyDevtoolsTerminal) {
+      return;
+    }
+    var bridgeApi = {};
+    DESKTOP_TERMINAL_METHODS.forEach(function (method) {
+      bridgeApi[method] = function () {
+        var args = Array.prototype.slice.call(arguments);
+        return request({ type: "desktop-terminal-call", method: method, args: args });
+      };
+    });
+    globalThis.__workbuddyDevtoolsTerminal = bridgeApi;
+  }
+
   function installDesktopHostShim() {
     window.addEventListener("message", handleDaemonTransportRequest);
     installExtensionAssetBridge();
+    installDesktopTerminalBridge();
     installDesktopEventBridge();
     if (globalThis.workbuddyDesktop) {
       return;
@@ -3967,7 +4138,7 @@ function renderWorkBuddyNativeShimJs({
       machineId: "",
       invoke: function (channel) {
         var args = Array.prototype.slice.call(arguments, 1);
-        return request({ type: "desktop-host-invoke", channel: channel, args: args });
+        return invokeDesktopChannel(channel, args, "");
       },
       events: hostEvents,
     };
@@ -3975,13 +4146,176 @@ function renderWorkBuddyNativeShimJs({
     // 官方 Desktop SDK 走 preload 暴露的通用 __wbInvoke(channel, payload, ...rest)。
     globalThis.__wbInvoke = function (channel) {
       var args = Array.prototype.slice.call(arguments, 1);
-      return request({
-        type: "desktop-host-invoke",
-        via: "preload",
-        channel: channel,
-        args: args,
-      });
+      return invokeDesktopChannel(channel, args, "preload");
     };
+  }
+
+  function pickFolderForRemoteHost(args) {
+    var first = args && args[0];
+    var defaultPath = "";
+    if (typeof first === "string") {
+      defaultPath = first;
+    } else if (first && typeof first === "object") {
+      defaultPath = first.defaultPath || first.path || first.cwd || first.folderPath || "";
+    }
+    return promptForRemoteFolderPath(defaultPath).then(function (selected) {
+      var folder = selected && selected[0] ? selected[0] : "";
+      return {
+        canceled: !folder,
+        filePaths: folder ? [folder] : [],
+        folderPaths: folder ? [folder] : [],
+      };
+    });
+  }
+
+  function invokeDesktopChannel(channel, args, via) {
+    if (fileManagerEnabled && (channel === "dialog:pickFolder" || channel === "window:selectDirectory")) {
+      return pickFolderForRemoteHost(args);
+    }
+    // 设置窗口：桌面端用 wb:windows:open 拉起一个独立 BrowserWindow（appId=settings），
+    // 远程访问时那个窗口会开在服务器本机。这里改成在网页里用浮层 iframe 打开同一个
+    // 设置页（windowAppId=settings），功能与桌面设置一致，也不会被浏览器拦弹窗。
+    if (channel === "wb:windows:open") {
+      var spec = args && args[1];
+      var appId = spec && spec.appId;
+      if (appId === "settings") {
+        openSettingsOverlay();
+        return Promise.resolve({ ok: true, windowId: "web-settings", web: true });
+      }
+    }
+    return request({
+      type: "desktop-host-invoke",
+      via: via || "",
+      channel: channel,
+      args: args,
+    });
+  }
+
+  var settingsOverlay = null;
+
+  function closeSettingsOverlay() {
+    if (!settingsOverlay) return;
+    settingsOverlay.remove();
+    settingsOverlay = null;
+    document.removeEventListener("keydown", onSettingsOverlayKeydown, true);
+  }
+
+  function onSettingsOverlayKeydown(event) {
+    if (event.key === "Escape") closeSettingsOverlay();
+  }
+
+  function openSettingsOverlay() {
+    if (settingsOverlay) return;
+
+    var overlay = document.createElement("div");
+    overlay.className = "wbr-settings-overlay";
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:2147483400;background:rgba(15,18,30,.45);display:flex;" +
+      "align-items:center;justify-content:center;padding:24px;";
+
+    var shell = document.createElement("div");
+    shell.style.cssText =
+      "position:relative;width:min(1180px,100%);height:min(880px,100%);display:flex;flex-direction:column;" +
+      "border-radius:14px;background:#fff;box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden;";
+
+    var bar = document.createElement("div");
+    bar.style.cssText =
+      "display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #eef0f5;" +
+      "background:#fbfcff;font:13px/1.4 'Segoe UI',sans-serif;color:#4a5164;";
+    var label = document.createElement("div");
+    label.textContent = "设置";
+    label.style.cssText = "flex:1;font-weight:600;";
+    bar.appendChild(label);
+
+    var close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "关闭";
+    close.style.cssText =
+      "height:26px;padding:0 10px;border:1px solid #dfe3ec;border-radius:7px;background:#fff;" +
+      "cursor:pointer;color:#4a5164;font-size:12px;";
+    close.addEventListener("click", closeSettingsOverlay);
+    bar.appendChild(close);
+    shell.appendChild(bar);
+
+    var frame = document.createElement("iframe");
+    frame.src = "/agent-manager/?windowAppId=settings";
+    frame.setAttribute("title", "WorkBuddy 设置");
+    frame.style.cssText = "flex:1;width:100%;border:0;background:#fff;";
+    shell.appendChild(frame);
+
+    overlay.appendChild(shell);
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) closeSettingsOverlay();
+    });
+    document.body.appendChild(overlay);
+    settingsOverlay = overlay;
+    document.addEventListener("keydown", onSettingsOverlayKeydown, true);
+  }
+
+  // WorkDaddy 面板：直接加载 WorkDaddy 自己的 UI（/workdaddy/panel.js 由桥接按 daemon 的
+  // 拼装规则生成，API 走同源代理）。这样网页端与桌面端是同一套界面和功能，不需要维护第二份 UI。
+  // 切换账号成功后，WorkDaddy 的 daemon 只会让桌面端 renderer 重载；
+  // 网页端是另一个 renderer，不刷新就会一直显示旧账号，看起来像“切换没生效”。
+  // 这里监听 /workdaddy/api/switch 的响应，成功后稍等片刻自动刷新页面。
+  function installWorkDaddySwitchRefresh() {
+    if (globalThis.__workbuddyWorkDaddySwitchHooked) return;
+    globalThis.__workbuddyWorkDaddySwitchHooked = true;
+
+    var originalFetch = window.fetch;
+    window.fetch = function (input, init) {
+      var promise = originalFetch.apply(this, arguments);
+      try {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        var method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+        if (method === 'POST' && url.indexOf('/workdaddy/api/switch') >= 0) {
+          return promise.then(function (response) {
+            if (response && response.ok) {
+              setTimeout(function () {
+                try {
+                  location.reload();
+                } catch (error) {
+                  /* 刷新失败时保持当前页面 */
+                }
+              }, 3500);
+            }
+            return response;
+          });
+        }
+      } catch (error) {
+        /* 不是标准 fetch 调用时保持原样 */
+      }
+      return promise;
+    };
+  }
+
+  function installWorkDaddyPanel() {
+    if (globalThis.__workbuddyWorkDaddyLoading) return;
+    globalThis.__workbuddyWorkDaddyLoading = true;
+
+    function load() {
+      fetch('/workdaddy/status', { credentials: 'same-origin' })
+        .then(function (response) {
+          return response.json();
+        })
+        .then(function (status) {
+          if (!status || !status.available) return;
+          if (document.getElementById('workdaddy-panel-script')) return;
+          var script = document.createElement('script');
+          script.id = 'workdaddy-panel-script';
+          script.src = '/workdaddy/panel.js';
+          script.async = true;
+          document.body.appendChild(script);
+        })
+        .catch(function () {
+          /* WorkDaddy 未安装或未运行：不加载面板 */
+        });
+    }
+
+    if (document.body) {
+      load();
+    } else {
+      document.addEventListener('DOMContentLoaded', load, { once: true });
+    }
   }
 
   function handleBridgeMessage(message) {
@@ -4480,6 +4814,8 @@ function renderWorkBuddyNativeShimJs({
 
   globalThis.buddyAPI = buddyApi;
   installDesktopHostShim();
+  installWorkDaddySwitchRefresh();
+  installWorkDaddyPanel();
   installRemoteHistoryPagerScrollWatcher();
   globalThis.__WORKBUDDY_VERSION__ = workBuddyVersion;
   globalThis.__electronLog = globalThis.__electronLog || {

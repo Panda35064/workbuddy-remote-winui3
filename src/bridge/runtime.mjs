@@ -21,6 +21,8 @@ const RESTART_HELPER_SCRIPT_PATH = path.resolve(
 );
 const CDP_COMMAND_TIMEOUT_MS = 8000;
 const WORKBUDDY_RPC_DEFAULT_TIMEOUT_MS = 35_000;
+const DESKTOP_HOST_DEFAULT_TIMEOUT_MS = 30_000;
+const DESKTOP_HOST_LONG_TIMEOUT_MS = 120_000;
 // 用于 shim 首屏元数据这类"必须快速返回"的探针调用：超时就触发 CDP 重连，
 // 而不是让整条命令一直挂着（页面会因此一直白屏）。
 const CDP_PROBE_TIMEOUT_MS = 2500;
@@ -114,6 +116,19 @@ const DESKTOP_EVENT_BRIDGE_SOURCE = `(() => {
   state.installed = true;
   return true;
 })()`;
+// WorkBuddy 桌面端 preload 通过 contextBridge 暴露的本地终端桥方法名。
+// 网页端没有这个对象，必须经 CDP 代理到真实渲染进程执行。
+const DESKTOP_TERMINAL_METHODS = new Set([
+  "create",
+  "list",
+  "close",
+  "rename",
+  "attach",
+  "poll",
+  "input",
+  "resize",
+  "detach",
+]);
 const WORKBUDDY_RPC_CREATE_LOAD_TIMEOUT_MS = 95_000;
 const WORKBUDDY_RPC_PROMPT_TIMEOUT_MS = 1_805_000;
 const CDP_MAX_PAYLOAD_BYTES = readPositiveIntegerEnv(
@@ -152,6 +167,10 @@ const BUDDY_API_TIMEOUT_MS_BY_METHOD = new Map([
   ["createSession", WORKBUDDY_RPC_CREATE_LOAD_TIMEOUT_MS],
   ["loadSession", WORKBUDDY_RPC_CREATE_LOAD_TIMEOUT_MS],
   ["prompt", WORKBUDDY_RPC_PROMPT_TIMEOUT_MS],
+  // 产物列表要扫会话目录，远程连接下容易超过默认 35s，网页端会显示“加载失败”。
+  ["getSessionArtifacts", 120_000],
+  ["listSessionArtifacts", 120_000],
+  ["getSessionArtifact", 120_000],
 ]);
 const BUDDY_API_DEDUP_METHODS = new Set([
   "getSession",
@@ -218,6 +237,28 @@ function isBuddyApiTimeoutRetrySafe(method) {
     return true;
   }
   return /^(?:get|list|configGet|storageGet|workspaceGet|workspaceSearch|workspaceCheck|authGet|connectorGet|connectorHas|growthGet|inspiration(?:List|Detail|SettingsGet|OnboardingCheck)|skill(?:Get|List)|pluginGet|migrationGet)/u.test(value);
+}
+
+/**
+ * 桌面宿主 IPC 通道的超时时间。
+ * 产物/会话/文件检索类通道要在桌面端扫盘，慢的时候 30s 不够，网页端会直接报加载失败。
+ */
+function getDesktopHostTimeoutMs(channel) {
+  const name = String(channel || "").toLowerCase();
+  if (/artifact|session|history|file|workspace|search|directory|list/u.test(name)) {
+    return DESKTOP_HOST_LONG_TIMEOUT_MS;
+  }
+  return DESKTOP_HOST_DEFAULT_TIMEOUT_MS;
+}
+
+function isDesktopHostRetrySafe(channel) {
+  const name = String(channel || "").toLowerCase();
+  return !/set|update|delete|remove|save|write|rename|create|switch|openwindow|quit|restart/u.test(name);
+}
+
+function isTimeoutError(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /timed out|timeout|TimeoutError/u.test(message);
 }
 
 function createTransferId(prefix) {
@@ -544,50 +585,55 @@ class CdpClient {
   async ensureBridgeInjected() {
     await this.evaluate(
       `(() => {
-        const workBuddyMenuBarHiderCss = "#workbuddy-menubar-container,.codebuddy-menubar,#workbuddy-window-controls-container,.workbuddy-window-controls{display:none!important;visibility:hidden!important;height:0!important;min-height:0!important;max-height:0!important;overflow:hidden!important;pointer-events:none!important;}#root{margin-top:0!important;height:100vh!important;min-height:100vh!important;}.teams-container,#root>.teams-container{height:100vh!important;min-height:100vh!important;}";
-
-        const hideWorkBuddyMenuBar = () => {
+        // 桌面窗口不能隐藏 menubar / window-controls。
+        // WorkBuddy 5.9 起主窗口是 frameless + 渲染层自绘标题栏，最小化、最大化、
+        // 关闭按钮就是 #workbuddy-window-controls-container 里的 DOM 元素；
+        // 早期版本在这里统一隐藏它们，等于把桌面端自己的标题栏拆掉。
+        // 现在只清理旧版本残留在 DOM 上的 !important 覆盖，桌面端保持原生外观；
+        // 网页端（浏览器）需要隐藏这些元素时，由 workbuddy-native.mjs 里的 shim 自己处理。
+        (() => {
           try {
-            let style = document.getElementById("wb-bridge-hide-menubar-style");
-            if (!style) {
-              style = document.createElement("style");
-              style.id = "wb-bridge-hide-menubar-style";
-              (document.head || document.documentElement).appendChild(style);
+            const legacyStyle = document.getElementById("wb-bridge-hide-menubar-style");
+            if (legacyStyle) legacyStyle.remove();
+
+            const observer = globalThis.__workbuddyRemoteMenuBarObserver;
+            if (observer) {
+              observer.disconnect();
+              delete globalThis.__workbuddyRemoteMenuBarObserver;
             }
-            if (style.textContent !== workBuddyMenuBarHiderCss) {
-              style.textContent = workBuddyMenuBarHiderCss;
+
+            const clearImportant = (element, props) => {
+              for (const prop of props) {
+                if (element.style.getPropertyPriority(prop) === "important") {
+                  element.style.removeProperty(prop);
+                }
+              }
+              if (!element.getAttribute("style")) element.removeAttribute("style");
+            };
+
+            const hiddenSelector =
+              "#workbuddy-menubar-container,.codebuddy-menubar,#workbuddy-window-controls-container,.workbuddy-window-controls,[data-workbuddy-remote-menu-bar-hidden]";
+            const hiddenProps = [
+              "display",
+              "visibility",
+              "height",
+              "min-height",
+              "max-height",
+              "overflow",
+              "pointer-events",
+            ];
+            for (const element of document.querySelectorAll(hiddenSelector)) {
+              clearImportant(element, hiddenProps);
+              delete element.dataset.workbuddyRemoteMenuBarHidden;
             }
 
             const root = document.getElementById("root");
-            if (root) {
-              root.style.setProperty("margin-top", "0", "important");
-              root.style.setProperty("height", "100vh", "important");
-              root.style.setProperty("min-height", "100vh", "important");
-            }
+            if (root) clearImportant(root, ["margin-top", "height", "min-height"]);
             for (const element of document.querySelectorAll(".teams-container")) {
-              element.style.setProperty("height", "100vh", "important");
-              element.style.setProperty("min-height", "100vh", "important");
-            }
-            for (const element of document.querySelectorAll("#workbuddy-menubar-container,.codebuddy-menubar,#workbuddy-window-controls-container,.workbuddy-window-controls")) {
-              element.dataset.workbuddyRemoteMenuBarHidden = "true";
-              element.style.setProperty("display", "none", "important");
-              element.style.setProperty("visibility", "hidden", "important");
-              element.style.setProperty("height", "0", "important");
-              element.style.setProperty("pointer-events", "none", "important");
+              clearImportant(element, ["height", "min-height"]);
             }
           } catch {}
-        };
-
-        hideWorkBuddyMenuBar();
-        if (!globalThis.__workbuddyRemoteMenuBarObserver && typeof MutationObserver === "function") {
-          globalThis.__workbuddyRemoteMenuBarObserver = new MutationObserver(hideWorkBuddyMenuBar);
-          globalThis.__workbuddyRemoteMenuBarObserver.observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ["id", "class"],
-          });
-        }
+        })();
 
         const bridgeVersion = 4;
         if (
@@ -1321,11 +1367,55 @@ class BridgeRuntime {
     ).replace(/\u2029/gu, "\\u2029");
     const callable =
       via === "preload" ? "globalThis.__wbInvoke" : "globalThis.workbuddyDesktop.invoke";
+    const timeoutMs = getDesktopHostTimeoutMs(name);
+    const expression = `${callable}(${JSON.stringify(name)}, ...${argsJson})`;
+
+    // 产物列表、会话列表这类调用在桌面端要扫盘/查 SQLite，慢的时候会超过 30s，
+    // 网页端就会看到“加载失败”。这里按通道放宽超时，并给只读通道补一次重试。
+    try {
+      const result = await this.cdp.evaluate(expression, { timeoutMs });
+      return rewriteExtensionEntryUrls(name, result);
+    } catch (error) {
+      if (!isDesktopHostRetrySafe(name) || !isTimeoutError(error)) {
+        throw error;
+      }
+      logger.warn("desktop_host.invoke_retry", "Retrying desktop host channel after timeout", {
+        channel: name,
+        timeoutMs,
+      });
+      const result = await this.cdp.evaluate(expression, { timeoutMs });
+      return rewriteExtensionEntryUrls(name, result);
+    }
+  }
+
+  /**
+   * 代理网页端对本地终端桥（window.__workbuddyDevtoolsTerminal）的调用。
+   * 该对象由 WorkBuddy 主进程 preload 注入，只存在于桌面渲染进程里，
+   * 因此这里统一转成一次 Runtime.evaluate 打到真实渲染进程执行，返回值原样带回。
+   */
+  async callDesktopTerminal(method, args = []) {
+    const name = typeof method === "string" ? method.trim() : "";
+    if (!DESKTOP_TERMINAL_METHODS.has(name)) {
+      throw new Error(`Unsupported desktop terminal method: ${name || "(missing)"}`);
+    }
+
+    await this.ensureCdpReady();
+    const argsJson = JSON.stringify(Array.isArray(args) ? args : [])
+      .replace(/\u2028/gu, "\\u2028")
+      .replace(/\u2029/gu, "\\u2029");
+    const methodLiteral = JSON.stringify(name);
     const result = await this.cdp.evaluate(
-      `${callable}(${JSON.stringify(name)}, ...${argsJson})`,
-      { timeoutMs: 30000 }
+      `(async () => {
+        const bridge = globalThis.__workbuddyDevtoolsTerminal;
+        if (!bridge || typeof bridge[${methodLiteral}] !== "function") {
+          throw new Error("WorkBuddy desktop terminal bridge is unavailable");
+        }
+        return await bridge[${methodLiteral}](...${argsJson});
+      })()`,
+      { timeoutMs: 30_000 }
     );
-    return rewriteExtensionEntryUrls(name, result);
+
+    return result === undefined ? null : result;
   }
 
   async getWorkspaceContextCandidates() {
@@ -2300,6 +2390,17 @@ class BridgeRuntime {
 
     if (payload.type === "daemon-frame") {
       const targetId = payload.id;
+      let framePreview = "";
+      try {
+        framePreview = JSON.stringify(payload.frame && payload.frame.json).slice(0, 240);
+      } catch {
+        framePreview = "";
+      }
+      logger.debug("daemon.frame.from_desktop", "Desktop daemon frame", {
+        socketId: targetId,
+        kind: payload.frame && payload.frame.kind,
+        preview: framePreview,
+      });
       for (const socket of this.browserSockets) {
         if (this.getBrowserSocketId(socket) === targetId) {
           this.sendToSocket(socket, { type: "daemon-frame", frame: payload.frame });
