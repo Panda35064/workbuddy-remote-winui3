@@ -2,8 +2,39 @@ import { BridgeRuntime } from "./bridge/runtime.mjs";
 import { logger } from "./logger.mjs";
 import { parseArgs } from "./shared.mjs";
 import { startBridgeServer } from "./server/bridge-server.mjs";
+import path from "node:path";
+import { rmSync, writeFileSync } from "node:fs";
 
 const activeResources = [];
+
+/**
+ * 控制台靠这个 pid 文件停止"上一次启动但仍在运行"的桥接（keepBridgeOnExit）。
+ * 没有 --log-path 时跳过，保证纯命令行用法不受影响。
+ */
+function writePidFile(options, port) {
+  if (!options.logPath) {
+    return "";
+  }
+  try {
+    const pidFile = path.join(path.dirname(options.logPath), `bridge-${port}.pid`);
+    writeFileSync(pidFile, String(process.pid), "utf8");
+    return pidFile;
+  } catch (error) {
+    logger.warn("bridge.pid_file.error", "Failed to write pid file", { error });
+    return "";
+  }
+}
+
+function removePidFile(pidFile) {
+  if (!pidFile) {
+    return;
+  }
+  try {
+    rmSync(pidFile, { force: true });
+  } catch {
+    // pid 文件残留不影响下次启动：控制台会校验进程是否真的在跑。
+  }
+}
 
 function hasStatusCodeSymbol(error, code) {
   if (!error || typeof error !== "object") {
@@ -68,6 +99,15 @@ async function main() {
   const runtime = new BridgeRuntime(options);
   const server = await startBridgeServer(runtime, options);
   activeResources.push(server);
+
+  const actualPort = server.address()?.port || options.listenPort;
+  const pidFile = writePidFile(options, actualPort);
+  if (pidFile) {
+    process.on("exit", () => removePidFile(pidFile));
+    process.on("SIGINT", () => process.exit(0));
+    process.on("SIGTERM", () => process.exit(0));
+  }
+
   runtime.warmup().catch((error) => {
     logger.warn("bridge.warmup.error", "Bridge warmup failed", { error });
   });

@@ -5,6 +5,7 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
@@ -13,14 +14,15 @@ namespace WorkBuddyRemote.WinUI;
 
 public sealed partial class MainWindow : Window
 {
-    private const int ScriptStillRunning = int.MinValue;
-
     private readonly string _projectRoot;
     private AppSettings _settings;
     private readonly bool _autostart;
     private readonly DispatcherTimer _timer = new();
+    private readonly BridgeHost _bridge = new();
+    private TrayIcon? _tray;
     private bool _busy;
     private bool _initialized;
+    private bool _exiting;
     private NavigationViewItem? _sectionItem;
     private bool _settingsSection;
     private bool _hadPassword;
@@ -71,10 +73,26 @@ public sealed partial class MainWindow : Window
         _sectionItem = Nav.MenuItems[0] as NavigationViewItem;
         Nav.SelectedItem = _sectionItem;
 
+        _bridge.Log += line => Dispatch(() => AppendLog("  " + line));
+        _bridge.StateChanged += () => Dispatch(async () => await RefreshStatusAsync());
+
+        appWindow.Closing += OnAppWindowClosing;
+
         _timer.Interval = TimeSpan.FromSeconds(2.5);
         _timer.Tick += async (_, _) => await RefreshStatusAsync();
 
         RootGrid.Loaded += OnRootLoaded;
+    }
+
+    private void Dispatch(Action action)
+    {
+        try
+        {
+            DispatcherQueue.TryEnqueue(() => action());
+        }
+        catch
+        {
+        }
     }
 
     private async void OnRootLoaded(object sender, RoutedEventArgs e)
@@ -92,21 +110,23 @@ public sealed partial class MainWindow : Window
         LoadSettingsIntoForm();
         UpdateEnvironmentText();
         PopulateAbout();
+        CreateTray();
 
         AppendLog($"控制台已就绪，项目目录：{_projectRoot}");
         AppendLog($"桥接端口 {_settings.BridgePort} · CDP 端口 {_settings.CdpPort} · 监听 {_settings.ListenHost}");
+        AppendLog($"配置文件：{_settings.ConfigPath}");
 
         await RefreshStatusAsync();
         _timer.Start();
 
         if (_autostart)
         {
+            // 开机静默启动：先尝试接管已有桥接，没有再自己起。
             if (!await NetProbe.HttpOkAsync(_settings.HealthUrl))
             {
                 await RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: false));
             }
 
-            // 开机静默启动：不弹到前台，最小化到任务栏。
             if (AppWindow.Presenter is OverlappedPresenter presenter)
             {
                 presenter.Minimize();
@@ -119,6 +139,159 @@ public sealed partial class MainWindow : Window
             overlapped.Restore();
             Activate();
         }
+    }
+
+    // ---------- 托盘 / 关闭语义 ----------
+
+    private void CreateTray()
+    {
+        if (_tray is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            var icon = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
+            _tray = new TrayIcon(hwnd, icon, "WorkBuddy Remote 控制台");
+            _tray.DoubleClick += () => Dispatch(ShowFromTray);
+            _tray.RightClick += point => Dispatch(() => ShowTrayMenu(point));
+            AppendLog(_tray.IsAdded ? "托盘图标已创建。" : "托盘图标创建失败（Shell_NotifyIcon 返回 false）。");
+        }
+        catch (Exception ex)
+        {
+            AppendLog("托盘图标初始化失败：" + ex.Message);
+        }
+    }
+
+    private void ShowTrayMenu(TrayIcon.POINT point)
+    {
+        if (_tray is null)
+        {
+            return;
+        }
+
+        var menu = new MenuFlyout();
+        var openItem = new MenuFlyoutItem { Text = "打开控制台", Icon = new FontIcon { Glyph = "\uE8A7" } };
+        openItem.Click += (_, _) => ShowFromTray();
+        menu.Items.Add(openItem);
+
+        var webItem = new MenuFlyoutItem { Text = "打开网页", Icon = new FontIcon { Glyph = "\uE774" } };
+        webItem.Click += (_, _) => OpenUrl();
+        menu.Items.Add(webItem);
+        menu.Items.Add(new MenuFlyoutSeparator());
+
+        if (_bridge.IsRunning)
+        {
+            var stopItem = new MenuFlyoutItem { Text = "停止桥接", Icon = new FontIcon { Glyph = "\uE71A" } };
+            stopItem.Click += async (_, _) => await RunExclusiveAsync("停止中", StopCoreAsync);
+            menu.Items.Add(stopItem);
+        }
+        else
+        {
+            var startItem = new MenuFlyoutItem { Text = "启动桥接", Icon = new FontIcon { Glyph = "\uE768" } };
+            startItem.Click += async (_, _) => await RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: false));
+            menu.Items.Add(startItem);
+        }
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var exitItem = new MenuFlyoutItem { Text = "退出", Icon = new FontIcon { Glyph = "\uE7E8" } };
+        exitItem.Click += (_, _) => ExitApplication();
+        menu.Items.Add(exitItem);
+
+        try
+        {
+            var scale = RootGrid.XamlRoot?.RasterizationScale ?? 1.0;
+            var position = AppWindow.Position;
+            var x = Math.Max(0, (point.X - position.X) / scale);
+            var y = Math.Max(0, (point.Y - position.Y) / scale);
+            menu.ShowAt(RootGrid, new FlyoutShowOptions { Position = new Windows.Foundation.Point(x, y) });
+        }
+        catch
+        {
+        }
+    }
+
+    public void ShowFromTray()
+    {
+        // 托盘回调在 UI 线程，命名管道回调在线程池：统一抛回 UI 线程处理。
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(ShowFromTray);
+            return;
+        }
+
+        try
+        {
+            if (AppWindow.Presenter is OverlappedPresenter presenter && presenter.State == OverlappedPresenterState.Minimized)
+            {
+                presenter.Restore();
+            }
+
+            AppWindow.Show();
+            Activate();
+            SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        }
+        catch
+        {
+        }
+    }
+
+    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (_exiting || !_settings.CloseToTray || _tray is null)
+        {
+            return;
+        }
+
+        args.Cancel = true;
+        AppWindow.Hide();
+
+        if (!_settings.TrayTipShown)
+        {
+            _tray.ShowBalloon("WorkBuddy Remote 仍在运行", "双击托盘图标可以重新打开控制台。右键菜单里可以退出。");
+            _settings.TrayTipShown = true;
+            try
+            {
+                _settings.Save();
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private void ExitApplication()
+    {
+        if (_exiting)
+        {
+            return;
+        }
+
+        _exiting = true;
+        _timer.Stop();
+
+        try
+        {
+            _bridge.DetachForExit(keepRunning: _settings.KeepBridgeOnExit);
+        }
+        catch
+        {
+        }
+
+        _tray?.Dispose();
+        _tray = null;
+
+        try
+        {
+            Close();
+        }
+        catch
+        {
+        }
+
+        Application.Current.Exit();
     }
 
     // ---------- 导航 ----------
@@ -193,7 +366,11 @@ public sealed partial class MainWindow : Window
         }
         else if (await NetProbe.HttpOkAsync(_settings.HealthUrl))
         {
-            SetStatus(InfoBarSeverity.Success, "运行中", $"网页控制台：{_settings.LocalUrl}");
+            var ready = await NetProbe.HttpOkAsync(_settings.ReadyUrl);
+            SetStatus(InfoBarSeverity.Success, "运行中",
+                ready
+                    ? $"网页控制台：{_settings.LocalUrl}"
+                    : $"端口 {_settings.BridgePort} 已监听，正在等待 WorkBuddy 连接…");
         }
         else
         {
@@ -201,6 +378,7 @@ public sealed partial class MainWindow : Window
         }
 
         WorkDaddyText.Text = await DetectWorkDaddyAsync();
+        _tray?.UpdateTooltip(portOpen ? $"WorkBuddy Remote · 运行中（:{_settings.BridgePort}）" : "WorkBuddy Remote · 已停止");
     }
 
     private static async Task<string> DetectWorkDaddyAsync()
@@ -297,9 +475,9 @@ public sealed partial class MainWindow : Window
     private void PopulateAbout()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version;
-        AboutVersionText.Text = $"版本 {version?.ToString(3) ?? "1.0.0"} · .NET 8 · Windows App SDK";
+        AboutVersionText.Text = $"版本 {version?.ToString(3) ?? "2.0.0"} · .NET {Environment.Version.Major} · Windows App SDK";
         AboutProjectText.Text = _projectRoot;
-        AboutConfigText.Text = _settings.ConfigPath;
+        AboutConfigText.Text = _settings.ConfigPath + (_settings.IsPortable ? "（便携版）" : "");
         AboutLogsText.Text = _settings.RuntimeTempDir;
         AboutPortsText.Text = $"桥接 {_settings.BridgePort} · CDP {_settings.CdpPort}";
     }
@@ -364,6 +542,10 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            if (!File.Exists(_settings.ConfigPath))
+            {
+                _settings.Save();
+            }
             Process.Start(new ProcessStartInfo(_settings.ConfigPath) { UseShellExecute = true });
         }
         catch (Exception ex)
@@ -412,6 +594,8 @@ public sealed partial class MainWindow : Window
         AutoRestartCheck.IsOn = _settings.AutoRestartWorkBuddy;
         StartWorkDaddyCheck.IsOn = _settings.StartWorkDaddy;
         AutoRunCheck.IsOn = StartupShortcut.IsEnabled();
+        CloseToTrayCheck.IsOn = _settings.CloseToTray;
+        KeepBridgeOnExitCheck.IsOn = _settings.KeepBridgeOnExit;
         FileManagerCheck.IsOn = _settings.EnableFileManager;
         EnableRestartCheck.IsOn = _settings.EnableRestart;
         MaskSecretsCheck.IsOn = _settings.MaskBridgeModelSecrets;
@@ -497,6 +681,8 @@ public sealed partial class MainWindow : Window
         _settings.KillWorkBuddyProcessesBeforeStart = KillBeforeStartCheck.IsOn;
         _settings.AutoRestartWorkBuddy = AutoRestartCheck.IsOn;
         _settings.StartWorkDaddy = StartWorkDaddyCheck.IsOn;
+        _settings.CloseToTray = CloseToTrayCheck.IsOn;
+        _settings.KeepBridgeOnExit = KeepBridgeOnExitCheck.IsOn;
         _settings.EnableFileManager = FileManagerCheck.IsOn;
         _settings.EnableRestart = EnableRestartCheck.IsOn;
         _settings.MaskBridgeModelSecrets = MaskSecretsCheck.IsOn;
@@ -516,7 +702,16 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        _settings.Save();
+        try
+        {
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            ShowSettingsError("写入配置文件失败：" + ex.Message);
+            return;
+        }
+
         _hadPassword = _settings.HasPassword;
         PasswordBox1.Password = string.Empty;
         PasswordBox2.Password = string.Empty;
@@ -554,186 +749,48 @@ public sealed partial class MainWindow : Window
 
     private async Task StartCoreAsync(bool openBrowser, bool restartWorkBuddy = false)
     {
-        if (!File.Exists(_settings.StartScript))
-        {
-            AppendLog("找不到启动脚本：" + _settings.StartScript);
-            return;
-        }
-
         AppendLog(restartWorkBuddy ? "正在重启 WorkBuddy 并启动桥接…" : "正在启动桥接服务…");
-        var psi = CreatePowerShellInfo(_settings.StartScript);
-        if (openBrowser)
+
+        var result = await _bridge.StartAsync(_settings, restartWorkBuddy);
+        if (!result.Ok && result.NeedsWorkBuddyRestart)
         {
-            psi.ArgumentList.Add("-OpenBrowser");
-        }
-        if (restartWorkBuddy)
-        {
-            psi.ArgumentList.Add("-RestartWorkBuddy");
+            if (_autostart && _settings.AutoRestartWorkBuddy)
+            {
+                AppendLog("开机静默启动：自动重启 WorkBuddy 以开启调试端口…");
+                result = await _bridge.StartAsync(_settings, restartWorkBuddy: true);
+            }
+            else if (!_autostart)
+            {
+                AppendLog("WorkBuddy 需要重启一次才能接上桥接，正在自动重启…");
+                result = await _bridge.StartAsync(_settings, restartWorkBuddy: true);
+            }
         }
 
-        using var process = new Process { StartInfo = psi };
-        WireOutput(process);
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        var exitCode = await WaitForScriptExitAsync(process, TimeSpan.FromMinutes(3));
-        if (exitCode == ScriptStillRunning)
-        {
-            AppendLog("启动脚本仍在后台运行，桥接就绪后状态会自动更新。");
-            return;
-        }
+        AppendLog(result.Message);
+        UpdateEnvironmentText();
 
-        switch (exitCode)
+        if (result.Ok && openBrowser)
         {
-            case 0:
-                AppendLog("桥接服务已就绪 → " + _settings.LocalUrl);
-                return;
-            case 42:
-                AppendLog("WorkBuddy 正在运行，但没有开启调试端口（需要重启一次）。");
-                if (restartWorkBuddy)
-                {
-                    AppendLog("重启后仍未开启调试端口，请检查是否有其他 WorkBuddy 实例占用单实例锁。");
-                    return;
-                }
-                if (_autostart && _settings.AutoRestartWorkBuddy)
-                {
-                    AppendLog("开机静默启动：正在自动重启 WorkBuddy 以开启调试端口…");
-                    await StartCoreAsync(openBrowser, restartWorkBuddy: true);
-                    return;
-                }
-                if (_autostart)
-                {
-                    AppendLog("已跳过自动重启（设置里已关闭）。可在控制台点“重启 WorkBuddy”。");
-                    return;
-                }
-                await StartCoreAsync(openBrowser, restartWorkBuddy: true);
-                return;
-            case 43:
-                AppendLog("WorkBuddy 未能在限定时间内开启 CDP 端口，请检查是否有旧实例占用单实例锁。");
-                return;
-            default:
-                AppendLog($"启动失败（退出码 {exitCode}），详情见日志目录。");
-                return;
+            OpenUrl();
         }
     }
 
     private async Task StopCoreAsync()
     {
-        if (!File.Exists(_settings.StopScript))
+        if (_bridge.IsExternal)
         {
-            AppendLog("找不到停止脚本：" + _settings.StopScript);
+            AppendLog("当前桥接不是这个控制台启动的（可能是上一次保留下来的），无法在此停止。");
             return;
         }
 
         AppendLog("正在停止桥接服务…");
-        var psi = CreatePowerShellInfo(_settings.StopScript);
-        psi.ArgumentList.Add("-BridgePort");
-        psi.ArgumentList.Add(_settings.BridgePort.ToString());
-        psi.ArgumentList.Add("-ProjectRoot");
-        psi.ArgumentList.Add(_settings.ProjectRoot);
-
-        using var process = new Process { StartInfo = psi };
-        WireOutput(process);
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        await WaitForScriptExitAsync(process, TimeSpan.FromSeconds(90));
-
-        for (var i = 0; i < 25; i++)
-        {
-            if (!await NetProbe.PortOpenAsync(_settings.BridgePort))
-            {
-                break;
-            }
-            await Task.Delay(200);
-        }
-
-        AppendLog(await NetProbe.HttpOkAsync(_settings.HealthUrl) ? "桥接服务仍在响应，请查看日志。" : "桥接服务已停止。");
-    }
-
-    private void WireOutput(Process process)
-    {
-        process.OutputDataReceived += (_, e) =>
-        {
-            if (!string.IsNullOrWhiteSpace(e.Data))
-            {
-                AppendLog("  " + e.Data.Trim());
-            }
-        };
-        process.ErrorDataReceived += (_, e) =>
-        {
-            if (!string.IsNullOrWhiteSpace(e.Data))
-            {
-                AppendLog("  " + e.Data.Trim());
-            }
-        };
-    }
-
-    private static ProcessStartInfo CreatePowerShellInfo(string scriptPath)
-    {
-        var shell = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
-        if (!File.Exists(shell))
-        {
-            shell = "powershell.exe";
-        }
-
-        var psi = new ProcessStartInfo(shell)
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        psi.ArgumentList.Add("-NoProfile");
-        psi.ArgumentList.Add("-ExecutionPolicy");
-        psi.ArgumentList.Add("Bypass");
-        psi.ArgumentList.Add("-File");
-        psi.ArgumentList.Add(scriptPath);
-        return psi;
-    }
-
-    private async Task<int> WaitForScriptExitAsync(Process process, TimeSpan timeout)
-    {
-        process.EnableRaisingEvents = true;
-        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        void OnExited(object? sender, EventArgs args)
-        {
-            try
-            {
-                completion.TrySetResult(process.ExitCode);
-            }
-            catch
-            {
-                completion.TrySetResult(ScriptStillRunning);
-            }
-        }
-
-        process.Exited += OnExited;
-        try
-        {
-            if (process.HasExited)
-            {
-                completion.TrySetResult(process.ExitCode);
-            }
-
-            var finished = await Task.WhenAny(completion.Task, Task.Delay(timeout));
-            if (finished != completion.Task)
-            {
-                AppendLog($"等待脚本结束超时（{timeout.TotalSeconds:0} 秒），已不再阻塞界面。");
-                return ScriptStillRunning;
-            }
-
-            return await completion.Task;
-        }
-        finally
-        {
-            process.Exited -= OnExited;
-        }
+        await _bridge.StopAsync();
+        AppendLog("桥接服务已停止。");
     }
 
     private static string PromptForProjectRoot()
     {
-        var guess = @"D:\Program Files\Tools\workbuddy-remote";
+        var guess = @"D:\Program Files\Tools\workbuddy-remote-v2";
         if (Directory.Exists(guess))
         {
             return guess;
@@ -741,4 +798,7 @@ public sealed partial class MainWindow : Window
 
         return AppContext.BaseDirectory;
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

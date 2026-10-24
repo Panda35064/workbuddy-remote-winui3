@@ -3,7 +3,10 @@ import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CONFIG_FILE_PATH = path.resolve(__dirname, "..", "workbuddy-remote.config.json");
+// 控制台会把配置文件放到 %APPDATA%\WorkBuddyRemote\config.json（便携版放程序目录），
+// 通过这个环境变量告诉桥接实际路径；没有设置时退回 v1 的项目根配置。
+const CONFIG_FILE_PATH =
+  process.env.WORKBUDDY_REMOTE_CONFIG || path.resolve(__dirname, "..", "workbuddy-remote.config.json");
 
 const DEFAULT_CONFIG = Object.freeze({
   workbuddyExePath: "",

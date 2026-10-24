@@ -509,6 +509,18 @@
                             </local:SettingsCard.CardContent>
                         </local:SettingsCard>
 
+                        <local:SettingsCard Glyph="&#xE8A7;" Header="关闭窗口时收进托盘" Description="程序继续在后台运行，双击托盘图标可唤回控制台">
+                            <local:SettingsCard.CardContent>
+                                <ToggleSwitch x:Name="CloseToTrayCheck" MinWidth="0" />
+                            </local:SettingsCard.CardContent>
+                        </local:SettingsCard>
+
+                        <local:SettingsCard Glyph="&#xE81C;" Header="退出后保留桥接" Description="关闭控制台不结束桥接进程，下次启动会自动接管">
+                            <local:SettingsCard.CardContent>
+                                <ToggleSwitch x:Name="KeepBridgeOnExitCheck" MinWidth="0" />
+                            </local:SettingsCard.CardContent>
+                        </local:SettingsCard>
+
                         <local:SettingsCard Glyph="&#xE8B7;" Header="允许文件管理" Description="网页端可浏览服务端目录、上传与新建文件夹">
                             <local:SettingsCard.CardContent>
                                 <ToggleSwitch x:Name="FileManagerCheck" MinWidth="0" />

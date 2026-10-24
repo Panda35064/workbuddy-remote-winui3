@@ -58,7 +58,7 @@ internal sealed class AppSettings
     public string WorkBuddyUserDataDir { get; set; } = "";
     public string PasswordHash { get; set; } = "";
     public bool HideWorkBuddyWindowAfterStart { get; set; }
-    public bool StartWorkDaddy { get; set; } = true;
+    public bool StartWorkDaddy { get; set; }
     public string WorkDaddyLauncherPath { get; set; } = "";
     public bool AutoRestartWorkBuddy { get; set; } = true;
     public bool KillWorkBuddyProcessesBeforeStart { get; set; }
@@ -67,9 +67,30 @@ internal sealed class AppSettings
     public bool MaskBridgeModelSecrets { get; set; }
     public string RuntimeRootDir { get; set; } = "";
 
-    public string ConfigPath => Path.Combine(ProjectRoot, "workbuddy-remote.config.json");
-    public string StartScript => Path.Combine(ProjectRoot, "tools", "start-workbuddy-remote.ps1");
-    public string StopScript => Path.Combine(ProjectRoot, "tools", "stop-workbuddy-remote.ps1");
+    // v2 新增：进程与托盘行为
+    public bool CloseToTray { get; set; } = true;
+    public bool KeepBridgeOnExit { get; set; }
+    public bool TrayTipShown { get; set; }
+
+    public string ConfigPath => ResolveConfigPath();
+
+    /// <summary>
+    /// 安装版写 %APPDATA%\WorkBuddyRemote\config.json；便携版（exe 旁有 portable.flag）
+    /// 写程序目录，方便整个文件夹拷走。
+    /// </summary>
+    public static string ResolveConfigPath()
+    {
+        var exeDir = AppContext.BaseDirectory;
+        if (File.Exists(Path.Combine(exeDir, "portable.flag")))
+        {
+            return Path.Combine(exeDir, "config.json");
+        }
+
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appData, "WorkBuddyRemote", "config.json");
+    }
+
+    public bool IsPortable => File.Exists(Path.Combine(AppContext.BaseDirectory, "portable.flag"));
 
     public bool IsLan => !IsLoopbackHost(ListenHost);
     public bool HasPassword => !string.IsNullOrWhiteSpace(PasswordHash);
@@ -77,7 +98,8 @@ internal sealed class AppSettings
     public string? LanUrl => IsLan && !string.IsNullOrWhiteSpace(LanAddress)
         ? $"http://{LanAddress}:{BridgePort}/agent-manager/"
         : null;
-    public string HealthUrl => $"http://{(IsLan ? "127.0.0.1" : ListenHost)}:{BridgePort}/readyz";
+    public string HealthUrl => $"http://{(IsLan ? "127.0.0.1" : ListenHost)}:{BridgePort}/healthz";
+    public string ReadyUrl => $"http://{(IsLan ? "127.0.0.1" : ListenHost)}:{BridgePort}/readyz";
     public string ListenLabel => IsLan ? "局域网" : "仅本机";
 
     private static bool IsLoopbackHost(string host)
@@ -97,15 +119,24 @@ internal sealed class AppSettings
         string userDataDir = "";
         string passwordHash = "";
         bool hideWindow = false;
-        bool startWorkDaddy = true;
+        bool startWorkDaddy = false;
         string workDaddyLauncherPath = "";
         bool autoRestartWorkBuddy = true;
         bool killBeforeStart = false;
         bool enableFileManager = true;
         bool enableRestart = true;
         bool maskSecrets = false;
+        bool closeToTray = true;
+        bool keepBridgeOnExit = false;
+        bool trayTipShown = false;
 
-        var configPath = Path.Combine(projectRoot, "workbuddy-remote.config.json");
+        var configPath = ResolveConfigPath();
+        var imported = false;
+        if (!File.Exists(configPath))
+        {
+            imported = TryImportLegacyConfig(projectRoot, configPath);
+        }
+
         try
         {
             if (File.Exists(configPath))
@@ -138,18 +169,21 @@ internal sealed class AppSettings
                 userDataDir = ReadString(root, "workbuddyUserDataDir");
                 passwordHash = ReadString(root, "passwordHash");
                 hideWindow = ReadBool(root, "hideWorkBuddyWindowAfterStart", true);
-                startWorkDaddy = ReadBool(root, "startWorkDaddy", true);
+                startWorkDaddy = ReadBool(root, "startWorkDaddy", false);
                 workDaddyLauncherPath = ReadString(root, "workDaddyLauncherPath");
                 autoRestartWorkBuddy = ReadBool(root, "autoRestartWorkBuddy", true);
                 killBeforeStart = ReadBool(root, "killWorkBuddyProcessesBeforeStart", false);
                 enableFileManager = ReadBool(root, "enableFileManager", true);
                 enableRestart = ReadBool(root, "enableRestart", true);
                 maskSecrets = ReadBool(root, "maskBridgeModelSecrets", false);
+                closeToTray = ReadBool(root, "closeToTray", true);
+                keepBridgeOnExit = ReadBool(root, "keepBridgeOnExit", false);
+                trayTipShown = ReadBool(root, "trayTipShown", false);
             }
         }
         catch
         {
-            // 配置损坏时退回默认值，启动脚本会给出更具体的错误。
+            // 配置损坏时退回默认值，保存时会用当前值重写。
         }
 
         string tempDir;
@@ -162,7 +196,7 @@ internal sealed class AppSettings
             tempDir = Path.Combine(projectRoot, "output", "runtime", "temp");
         }
 
-        return new AppSettings
+        var settings = new AppSettings
         {
             ProjectRoot = projectRoot,
             BridgePort = bridgePort,
@@ -182,7 +216,90 @@ internal sealed class AppSettings
             EnableRestart = enableRestart,
             MaskBridgeModelSecrets = maskSecrets,
             RuntimeRootDir = runtimeRootConfig,
+            CloseToTray = closeToTray,
+            KeepBridgeOnExit = keepBridgeOnExit,
+            TrayTipShown = trayTipShown,
         };
+
+        // 首次运行：把探测到的 WorkBuddy 写回配置，后续启动不再猜。
+        if (string.IsNullOrWhiteSpace(settings.WorkBuddyExePath))
+        {
+            var detected = WorkBuddyLocator.GuessExecutable();
+            if (!string.IsNullOrWhiteSpace(detected))
+            {
+                settings.WorkBuddyExePath = detected;
+            }
+        }
+
+        // 首次运行（或刚从 v1 导入）：立刻落盘一份默认配置，
+        // 用户和桥接进程都能直接看到这个文件。
+        if (imported || !File.Exists(settings.ConfigPath))
+        {
+            try
+            {
+                settings.Save();
+            }
+            catch
+            {
+            }
+        }
+
+        return settings;
+    }
+
+    /// <summary>首次运行时把 v1 的项目根配置导入到新位置，路径类字段失效则丢弃。</summary>
+    private static bool TryImportLegacyConfig(string projectRoot, string targetPath)
+    {
+        try
+        {
+            var legacyPath = Path.Combine(projectRoot, "workbuddy-remote.config.json");
+            if (!File.Exists(legacyPath) || string.Equals(legacyPath, targetPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var text = File.ReadAllText(legacyPath);
+            using var doc = JsonDocument.Parse(text);
+            var root = doc.RootElement;
+
+            var obj = new System.Text.Json.Nodes.JsonObject();
+            foreach (var name in new[] { "bridgePort", "cdpPort", "listenHost", "passwordHash",
+                                         "hideWorkBuddyWindowAfterStart", "enableFileManager",
+                                         "enableRestart", "maskBridgeModelSecrets",
+                                         "killWorkBuddyProcessesBeforeStart", "autoRestartWorkBuddy" })
+            {
+                if (root.TryGetProperty(name, out var element))
+                {
+                    obj[name] = System.Text.Json.Nodes.JsonNode.Parse(element.GetRawText());
+                }
+            }
+
+            var exe = root.TryGetProperty("workbuddyExePath", out var exeElement) ? (exeElement.GetString() ?? "") : "";
+            if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
+            {
+                obj["workbuddyExePath"] = exe;
+            }
+
+            var userData = root.TryGetProperty("workbuddyUserDataDir", out var udElement) ? (udElement.GetString() ?? "") : "";
+            if (!string.IsNullOrWhiteSpace(userData) && Directory.Exists(userData))
+            {
+                obj["workbuddyUserDataDir"] = userData;
+            }
+
+            if (root.TryGetProperty("startWorkDaddy", out var wd))
+            {
+                obj["startWorkDaddy"] = wd.ValueKind == JsonValueKind.True;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            File.WriteAllText(targetPath, obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
+                new System.Text.UTF8Encoding(false));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string ReadString(JsonElement root, string name)
@@ -203,7 +320,7 @@ internal sealed class AppSettings
         };
     }
 
-    /// <summary>把当前设置写回配置文件，保留文件中其它未知字段。</summary>
+    /// <summary>把当前设置写回配置文件，保留文件中其它未知字段。写临时文件后原子替换。</summary>
     public void Save()
     {
         var node = new System.Text.Json.Nodes.JsonObject();
@@ -229,6 +346,9 @@ internal sealed class AppSettings
         node["hideWorkBuddyWindowAfterStart"] = HideWorkBuddyWindowAfterStart;
         node["startWorkDaddy"] = StartWorkDaddy;
         node["autoRestartWorkBuddy"] = AutoRestartWorkBuddy;
+        node["closeToTray"] = CloseToTray;
+        node["keepBridgeOnExit"] = KeepBridgeOnExit;
+        node["trayTipShown"] = TrayTipShown;
         if (string.IsNullOrWhiteSpace(WorkDaddyLauncherPath))
         {
             node.Remove("workDaddyLauncherPath");
@@ -250,7 +370,16 @@ internal sealed class AppSettings
         }
 
         var options = new JsonSerializerOptions { WriteIndented = true };
-        File.WriteAllText(ConfigPath, node.ToJsonString(options) + Environment.NewLine, new System.Text.UTF8Encoding(false));
+        var json = node.ToJsonString(options) + Environment.NewLine;
+        var targetDir = Path.GetDirectoryName(ConfigPath);
+        if (!string.IsNullOrWhiteSpace(targetDir))
+        {
+            Directory.CreateDirectory(targetDir);
+        }
+
+        var tempPath = ConfigPath + ".tmp";
+        File.WriteAllText(tempPath, json, new System.Text.UTF8Encoding(false));
+        File.Move(tempPath, ConfigPath, overwrite: true);
 
         RuntimeTempDir = Path.Combine(
             string.IsNullOrWhiteSpace(RuntimeRootDir)
@@ -291,12 +420,20 @@ internal static class ProjectLocator
     public static bool IsProjectRoot(string? dir)
     {
         if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return false;
-        return File.Exists(Path.Combine(dir, "tools", "start-workbuddy-remote.ps1"));
+        return File.Exists(Path.Combine(dir, "bridge", "main.mjs"));
     }
 
     public static string? Resolve()
     {
         if (IsProjectRoot(ExeDir)) return ExeDir;
+
+        // 开发目录：apps/console/bin/x64/Release/<tfm>/ 向上最多 6 层能找到仓库根。
+        var dir = new DirectoryInfo(ExeDir);
+        for (var i = 0; i < 6 && dir is not null; i++)
+        {
+            if (IsProjectRoot(dir.FullName)) return Path.GetFullPath(dir.FullName);
+            dir = dir.Parent;
+        }
 
         foreach (var line in ReadIniLines())
         {
@@ -317,8 +454,8 @@ internal static class ProjectLocator
 
         var candidates = new[]
         {
+            @"D:\Program Files\Tools\workbuddy-remote-v2",
             @"D:\Program Files\Tools\workbuddy-remote",
-            @"C:\Users\Public\workbuddy-remote-new",
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "workbuddy-remote"),
         };
         foreach (var candidate in candidates)
@@ -414,13 +551,21 @@ internal static class Passwords
 
 internal static class WorkBuddyLocator
 {
+    /// <summary>探测顺序：运行中的进程 → 注册表卸载项 → 常见安装目录。</summary>
     public static string? GuessExecutable()
     {
+        var fromProcess = FindFromRunningProcess();
+        if (!string.IsNullOrWhiteSpace(fromProcess)) return fromProcess;
+
+        var fromRegistry = FindFromRegistry();
+        if (!string.IsNullOrWhiteSpace(fromRegistry)) return fromRegistry;
+
         var candidates = new[]
         {
-            @"D:\Program Files\Dev\WorkBuddy\WorkBuddy.exe",
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "WorkBuddy", "WorkBuddy.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WorkBuddy", "WorkBuddy.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "WorkBuddy", "WorkBuddy.exe"),
+            @"D:\Program Files\Dev\WorkBuddy\WorkBuddy.exe",
         };
         foreach (var candidate in candidates)
         {
@@ -433,6 +578,125 @@ internal static class WorkBuddyLocator
             }
         }
         return null;
+    }
+
+    private static string? FindFromRunningProcess()
+    {
+        try
+        {
+            foreach (var process in Process.GetProcessesByName("WorkBuddy"))
+            {
+                try
+                {
+                    var path = process.MainModule?.FileName;
+                    if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) return path;
+                }
+                catch
+                {
+                    // 位数不同或权限不足时读不到 MainModule，继续下一个。
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+        }
+        catch
+        {
+        }
+        return null;
+    }
+
+    private static string? FindFromRegistry()
+    {
+        var roots = new[]
+        {
+            (Microsoft.Win32.RegistryHive.CurrentUser, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (Microsoft.Win32.RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (Microsoft.Win32.RegistryHive.LocalMachine, @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        };
+
+        foreach (var (hive, subPath) in roots)
+        {
+            try
+            {
+                using var baseKey = Microsoft.Win32.RegistryKey.OpenBaseKey(hive, Microsoft.Win32.RegistryView.Default);
+                using var uninstall = baseKey.OpenSubKey(subPath);
+                if (uninstall is null) continue;
+
+                foreach (var name in uninstall.GetSubKeyNames())
+                {
+                    using var sub = uninstall.OpenSubKey(name);
+                    var display = sub?.GetValue("DisplayName") as string;
+                    if (string.IsNullOrWhiteSpace(display) ||
+                        display.IndexOf("WorkBuddy", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        continue;
+                    }
+
+                    var icon = sub?.GetValue("DisplayIcon") as string;
+                    if (!string.IsNullOrWhiteSpace(icon))
+                    {
+                        var path = icon.Trim().Trim('"');
+                        var comma = path.LastIndexOf(',');
+                        if (comma > 0 && path.Length - comma < 6)
+                        {
+                            path = path[..comma];
+                        }
+                        if (File.Exists(path)) return path;
+                    }
+
+                    var location = sub?.GetValue("InstallLocation") as string;
+                    if (!string.IsNullOrWhiteSpace(location))
+                    {
+                        var candidate = Path.Combine(location.Trim().Trim('"'), "WorkBuddy.exe");
+                        if (File.Exists(candidate)) return candidate;
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+        return null;
+    }
+
+    public static bool IsRunning()
+    {
+        try
+        {
+            var list = Process.GetProcessesByName("WorkBuddy");
+            foreach (var process in list) process.Dispose();
+            return list.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static void KillAll()
+    {
+        try
+        {
+            foreach (var process in Process.GetProcessesByName("WorkBuddy"))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+        }
+        catch
+        {
+        }
     }
 
     public static string DescribeInstalledVersion(string? exePath)
