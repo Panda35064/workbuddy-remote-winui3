@@ -7,8 +7,17 @@ param(
     [string]$PasswordHash,
     [switch]$KillWorkBuddyProcessesBeforeStart,
     [switch]$HideWorkBuddyWindowAfterStart,
-    [switch]$OpenBrowser
+    [switch]$OpenBrowser,
+    [switch]$RestartWorkBuddy,
+    [switch]$StartWorkDaddy
 )
+
+# Exit codes consumed by the WinForms console.
+# 0  = ready
+# 42 = WorkBuddy is already running without the debug port (needs a restart)
+# 43 = WorkBuddy did not expose the debug port in time
+$script:EXIT_NEEDS_WORKBUDDY_RESTART = 42
+$script:EXIT_CDP_TIMEOUT = 43
 
 $ErrorActionPreference = "Stop"
 $scriptPath = $MyInvocation.MyCommand.Path
@@ -256,6 +265,123 @@ function Test-PortListening {
     return $null -ne $conn
 }
 
+function Find-WorkDaddyLauncher {
+    param([object]$Config)
+
+    $configuredPath = Get-ConfigString -Config $Config -Name "workDaddyLauncherPath"
+    if ($configuredPath) {
+        $resolved = Resolve-ProjectPath $configuredPath
+        if (Test-Path -LiteralPath $resolved) {
+            return $resolved
+        }
+    }
+
+    $candidates = @()
+    if ($env:LOCALAPPDATA) {
+        $candidates += Join-Path $env:LOCALAPPDATA "Programs\WorkDaddy\WorkDaddyLauncher.exe"
+    }
+    if ($env:ProgramFiles) {
+        $candidates += Join-Path $env:ProgramFiles "WorkDaddy\WorkDaddyLauncher.exe"
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $candidates += Join-Path ${env:ProgramFiles(x86)} "WorkDaddy\WorkDaddyLauncher.exe"
+    }
+    $candidates += Join-Path (Split-Path -Parent $projectRoot) "WorkDaddy\WorkDaddyLauncher.exe"
+
+    try {
+        $uninstallRoots = @(
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        $entries = Get-ItemProperty -Path $uninstallRoots -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like "*WorkDaddy*" -and $_.InstallLocation }
+        foreach ($entry in $entries) {
+            $candidates += Join-Path $entry.InstallLocation "WorkDaddyLauncher.exe"
+        }
+    }
+    catch {
+    }
+
+    # 正在运行的 WorkDaddy 守护进程：<install>\scripts\runtime\node\node.exe
+    try {
+        $daemon = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop |
+            Where-Object { $_.CommandLine -like "*WorkDaddy*daemon.js*" } |
+            Select-Object -First 1
+        if ($daemon -and $daemon.ExecutablePath) {
+            $installRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $daemon.ExecutablePath)))
+            $candidates += Join-Path $installRoot "WorkDaddyLauncher.exe"
+        }
+    }
+    catch {
+    }
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    try {
+        $running = Get-CimInstance Win32_Process -Filter "Name='WorkDaddyLauncher.exe'" -ErrorAction Stop |
+            Select-Object -First 1
+        if ($running -and $running.ExecutablePath -and (Test-Path -LiteralPath $running.ExecutablePath)) {
+            return [System.IO.Path]::GetFullPath($running.ExecutablePath)
+        }
+    }
+    catch {
+    }
+
+    return ""
+}
+
+function Get-WorkDaddyCdpPort {
+    $file = Join-Path $env:APPDATA "WorkDaddy\cdp-port.json"
+    try {
+        $data = Get-Content -LiteralPath $file -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($data -and $data.port) {
+            return [int]$data.port
+        }
+    }
+    catch {
+    }
+    return 0
+}
+
+function Stop-WorkDaddyDaemon {
+    try {
+        Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop |
+            Where-Object { $_.CommandLine -like "*WorkDaddy*daemon.js*" } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+    catch {
+    }
+}
+
+function Start-WorkDaddyProcess {
+    param(
+        [string]$ExePath,
+        [int]$CdpPort
+    )
+
+    # 把 WorkDaddy 的 CDP 端口对齐到本项目，否则它无法注入面板、
+    # 切换账号后也无法让客户端重载。
+    $previousCdpPort = $env:WBSWITCH_CDP_PORT
+    $env:WBSWITCH_CDP_PORT = "$CdpPort"
+    try {
+        # 不能加重定向：PowerShell 5.1 在大小写重复的代理变量下会抛字典异常。
+        Start-Process -FilePath $ExePath -WorkingDirectory (Split-Path -Parent $ExePath) | Out-Null
+    }
+    finally {
+        if ($null -eq $previousCdpPort) {
+            Remove-Item Env:WBSWITCH_CDP_PORT -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:WBSWITCH_CDP_PORT = $previousCdpPort
+        }
+    }
+}
+
 function Stop-PortProcess {
     param([int]$Port)
     $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -310,6 +436,52 @@ function Open-BridgeUrlSafely {
     Write-Host "Bridge is ready, but the browser could not be opened automatically: $Url"
 }
 
+function Quote-NativeArgument {
+    param([string]$Value)
+
+    if ([string]::IsNullOrEmpty($Value)) {
+        return '""'
+    }
+
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $builder = [System.Text.StringBuilder]::new()
+    [void]$builder.Append('"')
+    $backslashCount = 0
+    foreach ($char in $Value.ToCharArray()) {
+        if ($char -eq '\') {
+            $backslashCount++
+            continue
+        }
+        if ($char -eq '"') {
+            [void]$builder.Append('\' * ($backslashCount * 2 + 1))
+            [void]$builder.Append($char)
+            $backslashCount = 0
+            continue
+        }
+        if ($backslashCount -gt 0) {
+            [void]$builder.Append('\' * $backslashCount)
+            $backslashCount = 0
+        }
+        [void]$builder.Append($char)
+    }
+    if ($backslashCount -gt 0) {
+        [void]$builder.Append('\' * ($backslashCount * 2))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Build-CommandLineArgumentString {
+    param([object[]]$Arguments)
+
+    # Start-Process -ArgumentList 会把数组用空格拼接，且不会自动加引号。
+    # 路径里带空格（如 D:\Program Files\...）时必须自己补引号，否则子进程只收到 "D:\Program"。
+    return (@($Arguments) | ForEach-Object { Quote-NativeArgument ([string]$_) }) -join " "
+}
+
 function Get-BridgeUrls {
     param([int]$Port, [string]$ListenAddress)
     $urls = [System.Collections.Specialized.OrderedDictionary]::new()
@@ -362,13 +534,17 @@ if (-not $PSBoundParameters.ContainsKey("UserDataDir") -or [string]::IsNullOrWhi
     }
 }
 if (-not $PSBoundParameters.ContainsKey("PasswordHash") -or [string]::IsNullOrWhiteSpace($PasswordHash)) {
-    $PasswordHash = $env:WORKBUDDY_REMOTE_PASSWORD_HASH
+    $configuredPasswordHash = Get-ConfigString -Config $config -Name "passwordHash"
+    $PasswordHash = if ($configuredPasswordHash) { $configuredPasswordHash } else { $env:WORKBUDDY_REMOTE_PASSWORD_HASH }
 }
 if (-not $PSBoundParameters.ContainsKey("KillWorkBuddyProcessesBeforeStart")) {
     $KillWorkBuddyProcessesBeforeStart = Get-ConfigBool -Config $config -Name "killWorkBuddyProcessesBeforeStart" -Fallback $false
 }
 if (-not $PSBoundParameters.ContainsKey("HideWorkBuddyWindowAfterStart")) {
     $HideWorkBuddyWindowAfterStart = Get-ConfigBool -Config $config -Name "hideWorkBuddyWindowAfterStart" -Fallback $false
+}
+if (-not $PSBoundParameters.ContainsKey("StartWorkDaddy")) {
+    $StartWorkDaddy = Get-ConfigBool -Config $config -Name "startWorkDaddy" -Fallback $true
 }
 
 $normalizedListenHost = $ListenHost.Trim().ToLowerInvariant()
@@ -398,26 +574,79 @@ Stop-PortProcess -Port ([int]$BridgePort)
 
 $exePath = Find-WorkBuddyExecutable -Config $config
 $workBuddyPid = 0
-if ($KillWorkBuddyProcessesBeforeStart) {
-    Write-Host "Stopping existing WorkBuddy processes..."
-    Get-Process WorkBuddy -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Seconds 2
+$runningWorkBuddy = @(Get-Process WorkBuddy -ErrorAction SilentlyContinue)
+
+if ($KillWorkBuddyProcessesBeforeStart -or $RestartWorkBuddy) {
+    if ($runningWorkBuddy.Count -gt 0) {
+        Write-Host "Stopping existing WorkBuddy processes..."
+        $runningWorkBuddy | Stop-Process -Force
+        for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Milliseconds 500
+            if (@(Get-Process WorkBuddy -ErrorAction SilentlyContinue).Count -eq 0) { break }
+        }
+    }
+    $runningWorkBuddy = @()
 }
 
 if (Test-PortListening -Port ([int]$CdpPort)) {
     Write-Host "Reusing existing WorkBuddy CDP port $CdpPort."
 }
+elseif ($runningWorkBuddy.Count -gt 0) {
+    # WorkBuddy 5.9.x only opens the DevTools port when it is started with the
+    # debug flag already in its environment. A running instance cannot be
+    # upgraded in place, so the app has to be restarted once.
+    Write-Host "WorkBuddy is already running without a debug port on $CdpPort."
+    Write-Host "WorkBuddy $((Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion) needs a restart to enable the bridge."
+    Write-Host "RESTART_WORKBUDDY_REQUIRED"
+    exit $script:EXIT_NEEDS_WORKBUDDY_RESTART
+}
 else {
     Write-Host "Launching WorkBuddy with CDP on port $CdpPort..."
     Write-Host "User data dir: $UserDataDir"
-    $workBuddyProcess = Start-Process -FilePath $exePath -ArgumentList @(
-        "--remote-debugging-port=$CdpPort",
-        "--user-data-dir=$UserDataDir"
-    ) -PassThru
-    $workBuddyPid = $workBuddyProcess.Id
+
+    # WorkBuddy 5.9 uses its own environment switch instead of a Chromium
+    # command line flag: main process reads WORKBUDDY_REMOTE_DEBUGGING_PORT and
+    # appends --remote-debugging-port/--remote-allow-origins itself. This also
+    # survives the in-place updater relaunch, which drops command line args.
+    $previousDebugPortEnv = $env:WORKBUDDY_REMOTE_DEBUGGING_PORT
+    $previousRunAsNodeEnv = $env:ELECTRON_RUN_AS_NODE
+    $previousNodeOptionsEnv = $env:NODE_OPTIONS
+    $env:WORKBUDDY_REMOTE_DEBUGGING_PORT = "$CdpPort"
+    # When the console itself is launched from a WorkBuddy terminal, these two
+    # variables are inherited and would turn WorkBuddy.exe into a plain node.
+    Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+    Remove-Item Env:NODE_OPTIONS -ErrorAction SilentlyContinue
+    $workBuddyOutLog = Join-Path $tempDir "workbuddy-$CdpPort.out.log"
+    $workBuddyErrLog = Join-Path $tempDir "workbuddy-$CdpPort.err.log"
+    Remove-Item -LiteralPath $workBuddyOutLog, $workBuddyErrLog -ErrorAction SilentlyContinue
+    try {
+        # Redirect the app stdio on purpose: a GUI process started without redirection
+        # inherits the caller's redirected pipe, keeps it open after this script exits,
+        # and any caller waiting for EOF (the console window) hangs forever.
+        $workBuddyProcess = Start-Process `
+            -FilePath $exePath `
+            -RedirectStandardOutput $workBuddyOutLog `
+            -RedirectStandardError $workBuddyErrLog `
+            -PassThru
+        $workBuddyPid = $workBuddyProcess.Id
+    }
+    finally {
+        if ($null -eq $previousDebugPortEnv) {
+            Remove-Item Env:WORKBUDDY_REMOTE_DEBUGGING_PORT -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:WORKBUDDY_REMOTE_DEBUGGING_PORT = $previousDebugPortEnv
+        }
+        if ($null -ne $previousRunAsNodeEnv) {
+            $env:ELECTRON_RUN_AS_NODE = $previousRunAsNodeEnv
+        }
+        if ($null -ne $previousNodeOptionsEnv) {
+            $env:NODE_OPTIONS = $previousNodeOptionsEnv
+        }
+    }
 
     $cdpReady = $false
-    for ($i = 0; $i -lt 30; $i++) {
+    for ($i = 0; $i -lt 60; $i++) {
         if (Test-PortListening -Port ([int]$CdpPort)) {
             $cdpReady = $true
             break
@@ -425,8 +654,11 @@ else {
         Start-Sleep -Seconds 1
     }
     if (-not $cdpReady) {
-        throw "CDP port $CdpPort did not start listening in time."
+        Write-Host "WorkBuddy did not open the debug port $CdpPort in time."
+        Write-Host "Check that no other WorkBuddy instance is holding the single instance lock."
+        exit $script:EXIT_CDP_TIMEOUT
     }
+    Write-Host "WorkBuddy debug port is ready on $CdpPort."
 }
 
 $nodePath = Find-NodeExecutable
@@ -458,9 +690,10 @@ $env:WORKBUDDY_REMOTE_EVENT_LOG_PATH = $bridgeEvents
 $env:WORKBUDDY_REMOTE_UI_LANG = [System.Globalization.CultureInfo]::CurrentUICulture.Name
 try {
     Write-Host "Starting lightweight bridge on $ListenHost`:$BridgePort..."
+    $bridgeArgumentLine = Build-CommandLineArgumentString -Arguments $bridgeArgs
     $bridgeProcess = Start-Process `
         -FilePath $nodePath `
-        -ArgumentList $bridgeArgs `
+        -ArgumentList $bridgeArgumentLine `
         -WorkingDirectory $projectRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput $bridgeLog `
@@ -514,8 +747,8 @@ if (-not $bridgeReady) {
     throw "Bridge did not become ready in time. Check log: $bridgeErr"
 }
 
-$urls = Get-BridgeUrls -Port ([int]$BridgePort) -ListenAddress $ListenHost
-$primaryUrl = $urls[0]
+$urls = @(Get-BridgeUrls -Port ([int]$BridgePort) -ListenAddress $ListenHost)
+$primaryUrl = @($urls)[0]
 Write-Host "Bridge ready: $primaryUrl"
 foreach ($url in $urls) {
     if ($url -ne $primaryUrl) {
@@ -523,6 +756,42 @@ foreach ($url in $urls) {
     }
 }
 Write-Host "Log: $bridgeEvents"
+
+# WorkDaddy 与本桥接共用同一个 CDP 端口：只有端口一致，它才能注入面板，
+# 并在切换账号后让客户端重载。WorkDaddy 默认按 profile 用 9222，
+# 这里用 WBSWITCH_CDP_PORT 把它对齐到本项目的 cdpPort。
+if ($StartWorkDaddy) {
+    $workDaddyExe = Find-WorkDaddyLauncher -Config $config
+    if (-not $workDaddyExe) {
+        Write-Host "WorkDaddy launcher not found; skipping."
+    }
+    else {
+        $workDaddyRunning = (Test-PortListening -Port 47832) -or (Test-PortListening -Port 47833)
+        $workDaddyCdpPort = Get-WorkDaddyCdpPort
+        $workDaddyPortMismatch = $workDaddyCdpPort -gt 0 -and $workDaddyCdpPort -ne [int]$CdpPort
+
+        if ($workDaddyRunning -and -not $workDaddyPortMismatch) {
+            Write-Host "WorkDaddy is already running (CDP $workDaddyCdpPort)."
+        }
+        else {
+            if ($workDaddyRunning) {
+                Write-Host "WorkDaddy is bound to CDP $workDaddyCdpPort, restarting it on $CdpPort..."
+                Stop-WorkDaddyDaemon
+                Start-Sleep -Milliseconds 800
+            }
+            Write-Host "Starting WorkDaddy: $workDaddyExe (CDP $CdpPort)"
+            Start-WorkDaddyProcess -ExePath $workDaddyExe -CdpPort ([int]$CdpPort)
+
+            for ($i = 0; $i -lt 30; $i++) {
+                if ((Test-PortListening -Port 47832) -or (Test-PortListening -Port 47833)) {
+                    Write-Host "WorkDaddy API is ready."
+                    break
+                }
+                Start-Sleep -Milliseconds 500
+            }
+        }
+    }
+}
 
 if ($OpenBrowser) {
     Open-BridgeUrlSafely -Url $primaryUrl

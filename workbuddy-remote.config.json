@@ -1,6 +1,6 @@
 {
-  "workbuddyExePath": "",
-  "workbuddyUserDataDir": "",
+  "workbuddyExePath": "D:\\Program Files\\Dev\\WorkBuddy\\WorkBuddy.exe",
+  "workbuddyUserDataDir": "C:\\Users\\Admin\\.workbuddy\\app",
   "runtimeRootDir": "output/runtime",
   "cdpPort": 9333,
   "bridgePort": 8780,
@@ -9,5 +9,7 @@
   "hideWorkBuddyWindowAfterStart": true,
   "maskBridgeModelSecrets": true,
   "enableFileManager": true,
-  "enableRestart": true
+  "enableRestart": true,
+  "startWorkDaddy": true,
+  "autoRestartWorkBuddy": true
 }
