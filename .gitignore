@@ -1,3 +1,18 @@
 node_modules/
 output/
 *.log
+
+# 控制台 exe 及其构建产物
+/WorkBuddyRemote.exe
+launcher/bin/
+launcher/obj/
+launcher/publish/
+ui-preview.png
+ui-preview.png.txt
+launcher-winui/bin/
+launcher-winui/obj/
+launcher-winui/publish/
+/console/
+
+# 代理工作记忆
+.workbuddy/
