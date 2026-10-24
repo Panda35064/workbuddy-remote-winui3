@@ -440,4 +440,7 @@ AssignProcessToJobObject(job, process.Handle);
 
 | 日期 | 阶段 | 结果 | 偏差/备注 |
 |---|---|---|---|
+| 2026-10-24 | Phase 0 | 完成。4 个语义提交 + `--no-ff` 合入 main，打 `v1-final`，工作区干净，`npm run check` 通过 | **旧仓 `vergess3/workbuddy-remote` 推送被拒（403，`Panda35064` 无写权限）**。改为把 `main`、`fix/workbuddy-5.8-webui`、`v1-final` 直接推到新仓。旧仓归档仍需用户在网页上操作 |
+| 2026-10-24 | Phase 1 | 完成。目录重排（`bridge/` `apps/console/` `scripts/`）、删 WinForms/VBS、TFM 升 `net10.0-windows10.0.19041.0`、加 `config.example.json` + `.gitignore` + `ci.yml`；fresh clone 下 `npm ci` / `npm run check` / `dotnet build` 全通过（0 error） | ① 本机原本只有 .NET 8，已用 winget 装 **10.0.402**；net10 + WinAppSDK 1.8 编译正常（§9-4 成立）。② 本机 Node 是 **v22.22.2**，不是文档写的 v24。③ CI 里 `/readyz` 必然是 503（没有 WorkBuddy），冒烟改用已有的 `/healthz`；为此新增 `WORKBUDDY_ALLOW_MISSING_ASAR=1` 降级开关，让没有 WorkBuddy 时桥接也能起（生产不设该变量，行为不变） |
+| 2026-10-24 | Phase 2 | 完成。新增 `BridgeHost.cs`（直接 spawn node、Job Object、健康轮询、端口顺延）、`TrayIcon.cs`、`SingleInstance.cs`；配置改到 `%APPDATA%\WorkBuddyRemote\config.json`（便携版 `portable.flag` 同目录），首次运行自动写默认值并导入 v1 配置；设置页新增“关闭窗口时收进托盘”“退出后保留桥接” | ① 实测：exe 起桥接无 PowerShell；关窗口后进程存活、`trayTipShown` 落盘、托盘图标创建成功；再次双击 exe 只唤回窗口（单实例）；kill 控制台后 node 随之结束（Job Object 生效）；手工占用 8780 时自动用 8781 并写回配置。② 托盘**未**使用 `NIM_SETVERSION` v4，保持 lParam 直接是鼠标消息，避免版本位解析差异。③ 桥接新增 `WORKBUDDY_REMOTE_CONFIG` 环境变量（读控制台配置）与 `bridge-<port>.pid`（用于停止上次保留的桥接）；控制台额外传 `WORKBUDDY_EXE_PATH`，否则自定义安装路径下找不到 app.asar |
 | | | | |
