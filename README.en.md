@@ -32,6 +32,18 @@ scripts/           Dev/CI scripts (PS1 is no longer an entry point)
 
 Per-user install into `%LOCALAPPDATA%\Programs\WorkBuddyRemote` (no admin). `checksums.txt` lists SHA256 for every asset.
 
+### Setup options
+
+The installer is **bilingual (Simplified Chinese / English)**: pick the language on the first page (it follows the system language by default). Then:
+
+- **Destination**: defaults to `%LOCALAPPDATA%\Programs\WorkBuddyRemote`, changeable.
+- **Additional tasks**: desktop shortcut, start automatically at sign-in (silent, in the tray).
+- **Bridge settings**: access scope (this computer only / LAN), bridge port (default 8780), CDP port (default 9333).
+  Choosing LAN **requires** an access password (at least 4 characters) before you can continue.
+- No need to hunt for a free port: the bridge advances to the next free one and shows the real value in the console.
+
+The installer never stores the password in the config as plain text: it passes it as UTF-16 hex in `install-overrides.json`, the console turns it into `sha256:salt:hash` in `config.json` on first launch and deletes the intermediate file. With an existing config only the ports and access scope are updated; `/VERYSILENT` installs leave an existing config untouched.
+
 > **Not code-signed.** SmartScreen may warn on first run: "More info -> Run anyway". Verify the SHA256 or build from source if you prefer.
 
 ## First run

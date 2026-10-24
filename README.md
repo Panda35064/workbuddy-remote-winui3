@@ -41,6 +41,18 @@ Release 里有三个包：
 
 安装版装到 `%LOCALAPPDATA%\Programs\WorkBuddyRemote`，**免管理员**。`checksums.txt` 里有全部产物的 SHA256。
 
+### 安装选项
+
+安装程序支持**简体中文 / 英文**：启动时先选语言（默认跟随系统语言，之后可在向导里切换），接着可以：
+
+- **安装位置**：默认 `%LOCALAPPDATA%\Programs\WorkBuddyRemote`，可改。
+- **附加任务**：桌面快捷方式、登录 Windows 时自动启动（静默在托盘运行）。
+- **桥接设置**：访问范围（仅本机 / 局域网）、桥接端口（默认 8780）、CDP 端口（默认 9333）。
+  选局域网时**必须填写访问密码**（至少 4 位），否则不让继续。
+- 端口冲突不用改：桥接启动时发现占用会自动顺延并在界面显示实际端口。
+
+安装器不会把密码明文留在配置里：密码以 UTF-16 十六进制写进 `install-overrides.json`，控制台第一次启动时转成 `sha256:salt:hash` 写进 `config.json`，然后删掉这个中间文件。已有配置时，安装器只更新端口与访问范围，其余字段保留；`/VERYSILENT` 静默安装则完全不碰已有配置。
+
 > 本项目**不做代码签名**。首次运行可能触发 SmartScreen「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」即可；不放心可以自己核对 SHA256 或从源码构建。
 
 ## 首次运行
@@ -171,6 +183,7 @@ CI：push / PR 跑语法检查、桥接冒烟与 `dotnet build`；打 `v*` tag �
 
 - WorkDaddy 采用 **AGPL-3.0**。本项目不打包它的任何文件、默认关闭、由用户主动开启；开启后桥接会在运行时读取本机已安装的 WorkDaddy 资源并经由本项目 HTTP 服务对外提供，按 AGPL §13 网络条款，源码请见 <https://github.com/babygoton/WorkDaddy>。
 - WorkBuddy 的界面资源来自本机安装的官方客户端，本仓库不包含任何 WorkBuddy 二进制。
+- 安装器简体中文语言文件来自 [Inno Setup 官方仓库](https://github.com/jrsoftware/issrc/blob/main/Files/Languages/ChineseSimplified.isl)（维护者 Zhenghan Yang / Kira），随 Inno Setup 语言包规则分发。
 
 ## License
 

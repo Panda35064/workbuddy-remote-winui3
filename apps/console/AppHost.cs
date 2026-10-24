@@ -3,6 +3,7 @@ using System.Drawing.Drawing2D;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 
 namespace WorkBuddyRemote;
@@ -71,6 +72,9 @@ internal sealed class AppSettings
     public bool CloseToTray { get; set; } = true;
     public bool KeepBridgeOnExit { get; set; }
     public bool TrayTipShown { get; set; }
+
+    /// <summary>本次加载是否套用了安装器写下的设置（用于启动日志提示）。</summary>
+    public bool InstallerOverridesApplied { get; set; }
 
     public string ConfigPath => ResolveConfigPath();
 
@@ -231,13 +235,32 @@ internal sealed class AppSettings
             }
         }
 
-        // 首次运行（或刚从 v1 导入）：立刻落盘一份默认配置，
+        // 安装器选择的端口 / 访问范围 / 密码，在这里落地并删除中间文件。
+        var overridesPath = Path.Combine(Path.GetDirectoryName(settings.ConfigPath)!, InstallerOverridesFile);
+        var overridesApplied = ApplyInstallerOverrides(settings, overridesPath);
+        settings.InstallerOverridesApplied = overridesApplied;
+
+        // 首次运行（或刚从 v1 导入、或刚应用安装器设置）：立刻落盘一份配置，
         // 用户和桥接进程都能直接看到这个文件。
-        if (imported || !File.Exists(settings.ConfigPath))
+        var saved = false;
+        if (imported || overridesApplied || !File.Exists(settings.ConfigPath))
         {
             try
             {
                 settings.Save();
+                saved = true;
+            }
+            catch
+            {
+            }
+        }
+
+        // 只有真正写进配置后才删中间文件；写失败就留着下次重试。
+        if (overridesApplied && saved)
+        {
+            try
+            {
+                File.Delete(overridesPath);
             }
             catch
             {
@@ -245,6 +268,78 @@ internal sealed class AppSettings
         }
 
         return settings;
+    }
+
+    private const string InstallerOverridesFile = "install-overrides.json";
+
+    /// <summary>
+    /// 应用安装器写下的 install-overrides.json（端口 / 访问范围 / 密码）。
+    /// 密码在安装器里以 UTF-16 十六进制传递，这里还原后生成与桥接一致的哈希。
+    /// </summary>
+    private static bool ApplyInstallerOverrides(AppSettings settings, string overridesPath)
+    {
+        try
+        {
+            if (!File.Exists(overridesPath))
+            {
+                return false;
+            }
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(overridesPath));
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("bridgePort", out var bp) && bp.ValueKind == JsonValueKind.Number &&
+                bp.GetInt32() is >= 1 and <= 65535)
+            {
+                settings.BridgePort = bp.GetInt32();
+            }
+
+            if (root.TryGetProperty("cdpPort", out var cp) && cp.ValueKind == JsonValueKind.Number &&
+                cp.GetInt32() is >= 1 and <= 65535)
+            {
+                settings.CdpPort = cp.GetInt32();
+            }
+
+            var host = ReadString(root, "listenHost");
+            if (!string.IsNullOrWhiteSpace(host))
+            {
+                settings.ListenHost = host;
+            }
+
+            var passwordHex = ReadString(root, "passwordUtf16Hex");
+            if (!string.IsNullOrWhiteSpace(passwordHex) && DecodeUtf16Hex(passwordHex) is { Length: > 0 } password)
+            {
+                settings.PasswordHash = Passwords.CreateHash(password);
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? DecodeUtf16Hex(string hex)
+    {
+        if (hex.Length == 0 || hex.Length % 4 != 0)
+        {
+            return null;
+        }
+
+        var bytes = new byte[hex.Length / 2];
+        for (int i = 0, b = 0; i < hex.Length; i += 4, b += 2)
+        {
+            if (!ushort.TryParse(hex.AsSpan(i, 4), System.Globalization.NumberStyles.HexNumber, null, out var unit))
+            {
+                return null;
+            }
+
+            bytes[b] = (byte)(unit & 0xFF);
+            bytes[b + 1] = (byte)(unit >> 8);
+        }
+
+        return Encoding.Unicode.GetString(bytes);
     }
 
     /// <summary>首次运行时把 v1 的项目根配置导入到新位置，路径类字段失效则丢弃。</summary>
