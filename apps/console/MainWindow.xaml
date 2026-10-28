@@ -636,15 +636,21 @@
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
-                                    <TextBlock Text="项目目录" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <TextBlock x:Name="AboutProjectText" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Text="—" />
-                                    <TextBlock Grid.Row="1" Text="配置文件" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <TextBlock x:Name="AboutConfigText" Grid.Row="1" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Text="—" />
-                                    <TextBlock Grid.Row="2" Text="日志目录" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <TextBlock x:Name="AboutLogsText" Grid.Row="2" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Text="—" />
-                                    <TextBlock Grid.Row="3" Text="端口" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <TextBlock x:Name="AboutPortsText" Grid.Row="3" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" Text="—" />
+                                    <TextBlock Text="适配 WorkBuddy" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock x:Name="AboutAdaptedText" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" Text="—" TextWrapping="Wrap" />
+                                    <TextBlock Grid.Row="1" Text="本机 WorkBuddy" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock x:Name="AboutInstalledText" Grid.Row="1" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" Text="—" />
+                                    <TextBlock Grid.Row="2" Text="项目目录" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock x:Name="AboutProjectText" Grid.Row="2" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Text="—" />
+                                    <TextBlock Grid.Row="3" Text="配置文件" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock x:Name="AboutConfigText" Grid.Row="3" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Text="—" />
+                                    <TextBlock Grid.Row="4" Text="日志目录" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock x:Name="AboutLogsText" Grid.Row="4" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" IsTextSelectionEnabled="True" TextWrapping="Wrap" Text="—" />
+                                    <TextBlock Grid.Row="5" Text="端口" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock x:Name="AboutPortsText" Grid.Row="5" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" Text="—" />
                                 </Grid>
                             </StackPanel>
                         </Border>

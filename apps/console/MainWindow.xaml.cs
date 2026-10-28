@@ -555,10 +555,35 @@ public sealed partial class MainWindow : Window
         LogPathText.Text = _settings.RuntimeTempDir;
     }
 
+    /// <summary>本机版本 + 与适配版本的比对提示，升级 WorkBuddy 后一眼能看出是否需要复验。</summary>
+    private static string DescribeInstalledWorkBuddy(string installed)
+    {
+        if (string.IsNullOrWhiteSpace(installed))
+        {
+            return "未检测到";
+        }
+
+        var parts = installed.Split('.');
+        var adapted = AppInfo.AdaptedWorkBuddyVersion.Split('.');
+        if (parts.Length >= 2 && adapted.Length >= 2 &&
+            (!string.Equals(parts[0], adapted[0], StringComparison.Ordinal) ||
+             !string.Equals(parts[1], adapted[1], StringComparison.Ordinal)))
+        {
+            return $"{installed}（未验证，适配 {AppInfo.AdaptedWorkBuddyVersion}）";
+        }
+
+        return installed;
+    }
+
     private void PopulateAbout()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version;
         AboutVersionText.Text = $"版本 {version?.ToString(3) ?? "2.0.0"} · .NET {Environment.Version.Major} · Windows App SDK";
+        AboutAdaptedText.Text = AppInfo.AdaptedWorkBuddyLabel;
+
+        var installed = WorkBuddyLocator.DescribeInstalledVersion(_settings.WorkBuddyExePath);
+        AboutInstalledText.Text = DescribeInstalledWorkBuddy(installed);
+
         AboutProjectText.Text = _projectRoot;
         AboutConfigText.Text = _settings.ConfigPath + (_settings.IsPortable ? "（便携版）" : "");
         AboutLogsText.Text = _settings.RuntimeTempDir;

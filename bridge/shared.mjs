@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const WORKSPACE_ROOT_FOLDER_NAME = "WBWorkspaces";
@@ -70,9 +70,31 @@ function parseArgs(argv) {
   return options;
 }
 
+/**
+ * 控制台会把配置文件路径通过 WORKBUDDY_REMOTE_CONFIG 传进来（%APPDATA%\WorkBuddyRemote\config.json）。
+ * 自定义安装目录（例如 D:\Program Files\Dev\WorkBuddy）不在固定候选里，所以先把用户配置里的路径用上。
+ */
+function resolveConfiguredWorkBuddyExe() {
+  const configPath = process.env.WORKBUDDY_REMOTE_CONFIG;
+  if (!configPath) {
+    return "";
+  }
+  try {
+    const data = JSON.parse(readFileSync(configPath, "utf8"));
+    const value = typeof data?.workbuddyExePath === "string" ? data.workbuddyExePath.trim() : "";
+    if (value && existsSync(value)) {
+      return path.resolve(value);
+    }
+  } catch {
+    // 配置不存在或损坏时退回下面的固定候选路径。
+  }
+  return "";
+}
+
 function resolveWorkBuddyExePath() {
   const candidates = [
     process.env.WORKBUDDY_EXE_PATH,
+    resolveConfiguredWorkBuddyExe(),
     path.join(process.env.LOCALAPPDATA || "", "Programs", "WorkBuddy", "WorkBuddy.exe"),
     path.join(process.env.ProgramFiles || "", "WorkBuddy", "WorkBuddy.exe"),
     path.join(process.env["ProgramFiles(x86)"] || "", "WorkBuddy", "WorkBuddy.exe"),

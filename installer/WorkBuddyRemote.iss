@@ -1,8 +1,11 @@
-; WorkBuddy Remote installer (Inno Setup 6)
+﻿; WorkBuddy Remote installer (Inno Setup 6)
+;
 ; Build with:
-;   ISCC /DAppVersion=2.0.0 /DPayload=..\build\selfcontained /DFlavorSuffix="" installer\WorkBuddyRemote.iss
-;   ISCC /DAppVersion=2.0.0 /DPayload=..\build\slim           /DFlavorSuffix="slim-" installer\WorkBuddyRemote.iss
-; Keep this file pure ASCII: the build machine may use a non-UTF8 code page.
+;   ISCC /DAppVersion=2.0.0 /DPayload=..\build\selfcontained /DFlavorSuffix=""                installer\WorkBuddyRemote.iss
+;   ISCC /DAppVersion=2.0.0 /DPayload=..\build\slim           /DFlavorSuffix="slim-" /DCheckRuntime=1 installer\WorkBuddyRemote.iss
+;
+; IMPORTANT: keep this file UTF-8 WITH BOM. It carries Chinese UI strings; without the BOM
+; the compiler reads them as ANSI and the Chinese text turns into mojibake.
 
 #define MyAppName "WorkBuddy Remote"
 #define MyAppExeName "WorkBuddyRemoteWinUI.exe"
@@ -50,13 +53,30 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 AllowNoIcons=yes
+; 默认跟随系统语言，并且始终显示语言选择（简体中文 / English）
+LanguageDetectionMethod=uilanguage
+ShowLanguageDialog=yes
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "zh"; MessagesFile: "languages\ChineseSimplified.isl"
+Name: "en"; MessagesFile: "compiler:Default.isl"
+
+[CustomMessages]
+zh.TaskGroup=附加图标与启动项
+zh.TaskDesktopIcon=创建桌面快捷方式
+zh.TaskStartup=登录 Windows 时自动启动（静默在托盘运行）
+zh.LaunchApp=立即启动 {#MyAppName}
+zh.RuntimeMissing=这是精简版安装包，需要先安装 .NET 10 桌面运行时。%n%n下载地址：https://dotnet.microsoft.com/download/dotnet/10.0%n%n安装会继续，但缺少运行时程序无法启动。%n不需要安装运行时的话请使用自包含安装包。
+
+en.TaskGroup=Additional icons and startup
+en.TaskDesktopIcon=Create a desktop shortcut
+en.TaskStartup=Start WorkBuddy Remote when I sign in (silent, in the tray)
+en.LaunchApp=Launch {#MyAppName}
+en.RuntimeMissing=This is the slim build and needs the .NET 10 Desktop Runtime.%n%nDownload: https://dotnet.microsoft.com/download/dotnet/10.0%n%nSetup will continue, but the app will not start without it.%nUse the self-contained installer if you do not want to install runtimes.
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
-Name: "startup"; Description: "Start WorkBuddy Remote when I sign in"; GroupDescription: "Additional icons:"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:TaskDesktopIcon}"; GroupDescription: "{cm:TaskGroup}"
+Name: "startup"; Description: "{cm:TaskStartup}"; GroupDescription: "{cm:TaskGroup}"; Flags: unchecked
 
 [Files]
 Source: "{#Payload}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -68,7 +88,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 Name: "{userstartup}\WorkBuddyRemote.lnk"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--autostart"; WorkingDir: "{app}"; Tasks: startup
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: files; Name: "{userstartup}\WorkBuddyRemote.lnk"
@@ -91,12 +111,6 @@ end;
 procedure InitializeWizard();
 begin
   if not HasDotNet10Desktop() then
-  begin
-    MsgBox('This is the slim build and needs the .NET 10 Desktop Runtime.' + #13#10 +
-           'Download: https://dotnet.microsoft.com/download/dotnet/10.0' + #13#10 + #13#10 +
-           'Setup will continue, but the app will not start without it.' + #13#10 +
-           'Use the self-contained installer if you do not want to install runtimes.',
-           mbInformation, MB_OK);
-  end;
+    MsgBox(ExpandConstant('{cm:RuntimeMissing}'), mbInformation, MB_OK);
 end;
 #endif

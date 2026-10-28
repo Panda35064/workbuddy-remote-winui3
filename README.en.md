@@ -28,7 +28,9 @@ scripts/           Dev/CI scripts (PS1 is no longer an entry point)
 |---|---|
 | `WorkBuddyRemote-<ver>-setup.exe` | **Recommended.** Self-contained .NET 10 + Windows App SDK + Node |
 | `WorkBuddyRemote-<ver>-slim-setup.exe` | Needs .NET 10 Desktop Runtime + Windows App Runtime |
-| `WorkBuddyRemote-<ver>-portable.zip` | Unzip and run; config lives next to the exe |
+| `WorkBuddyRemote-<ver>-portable.zip` | Unzip to a fixed folder first, then run (config lives next to the exe, see `portable.flag`) |
+
+> **Unzip before running** the portable build. Double-clicking the exe inside the zip makes Windows extract the whole archive to a temp folder and open it in Explorer (which looks like "a File Explorer window pops up on startup"), and that repeats on every run.
 
 Per-user install into `%LOCALAPPDATA%\Programs\WorkBuddyRemote` (no admin). `checksums.txt` lists SHA256 for every asset.
 
@@ -80,6 +82,12 @@ Portable: `config.json` next to the exe (when `portable.flag` exists)
 ```
 
 Writes are atomic (temp file + replace); unknown keys are preserved.
+
+## Supported WorkBuddy versions
+
+This build targets **WorkBuddy 5.9.2** (the same bridge was verified on 5.9.0 – 5.9.2): CDP connection, `renderer` asset loading and shim injection all tested.
+
+The console's About page shows both the **supported version** and the **locally detected version**. If the local build falls outside the verified range it is marked "unverified".
 
 ## WorkBuddy 5.9+ needs an env var
 

@@ -37,7 +37,9 @@ Release 里有三个包：
 |---|---|
 | `WorkBuddyRemote-<版本>-setup.exe` | **推荐**。自包含 .NET 10 运行时 + Windows App SDK + Node，装完即用 |
 | `WorkBuddyRemote-<版本>-slim-setup.exe` | 精简版，需要系统已装 .NET 10 桌面运行时与 Windows App Runtime |
-| `WorkBuddyRemote-<版本>-portable.zip` | 便携版，解压即用，配置写在程序目录（`portable.flag`） |
+| `WorkBuddyRemote-<版本>-portable.zip` | 便携版，解压到固定目录后再运行（配置写在程序目录，见 `portable.flag`） |
+
+> 便携版**请先解压再运行**。直接从压缩包里双击 exe，Windows 会把整包解压到临时目录并顺手打开那个文件夹（看起来就像"启动时弹出资源管理器"），而且每次运行都会重来一遍。
 
 安装版装到 `%LOCALAPPDATA%\Programs\WorkBuddyRemote`，**免管理员**。`checksums.txt` 里有全部产物的 SHA256。
 
@@ -111,6 +113,12 @@ dotnet build apps/console/WorkBuddyRemote.WinUI.csproj -c Release -p:Platform=x6
 - `maskBridgeModelSecrets`：在服务端拦截模型配置读取，把接口地址与 API Key 换成占位值再返回浏览器。
 - `keepBridgeOnExit`：控制台退出后保留桥接进程（默认关）。下次启动会通过 `bridge-<port>.pid` 接管并停掉旧的。
 - `startWorkDaddy`：默认关。开启后由桥接探测/拉起 WorkDaddy（AGPL-3.0，见文末声明）。
+
+## 适配的 WorkBuddy 版本
+
+当前版本适配 **WorkBuddy 5.9.2**（同一套桥接逻辑在 5.9.0 – 5.9.2 上验证过）：CDP 连接、`renderer` 资源读取、shim 注入都实测可用。
+
+控制台「关于」页会同时显示**适配版本**和**本机检测到的版本**；如果本机版本超出验证区间，会标注「未验证」，这时建议先看 [常见问题](#常见问题) 再升级。
 
 ## WorkBuddy 5.9 的启动方式（重要）
 
