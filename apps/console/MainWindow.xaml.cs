@@ -116,10 +116,6 @@ public sealed partial class MainWindow : Window
         AppendLog($"控制台已就绪，项目目录：{_projectRoot}");
         AppendLog($"桥接端口 {_settings.BridgePort} · CDP 端口 {_settings.CdpPort} · 监听 {_settings.ListenHost}");
         AppendLog($"配置文件：{_settings.ConfigPath}");
-        if (_settings.InstallerOverridesApplied)
-        {
-            AppendLog("已应用安装过程中填写的桥接设置（端口 / 访问范围 / 访问密码）。");
-        }
 
         await RefreshStatusAsync();
         _timer.Start();
