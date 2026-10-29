@@ -62,15 +62,6 @@ function renderWorkBuddyNativeShimJs({
 } = {}) {
   const methodList = [...new Set([...FALLBACK_BUDDY_API_METHODS, ...methods])];
   return `(() => {
-  // 前端用 location.pathname 初始化内存路由：桌面端是 "/"，远程页面是 "/agent-manager/"。
-  // 路由表里没有这个前缀，初始位置不匹配，导致 navigate 之后视图不切换
-  // （表现就是“发送后页面不跳转”）。这里在应用启动前先把地址规范成根路径。
-  try {
-    if (location.pathname.indexOf("/agent-manager") === 0) {
-      history.replaceState(null, "", "/");
-    }
-  } catch (error) {
-  }
   const apiMethods = ${JSON.stringify(methodList)};
   const workBuddyVersion = ${JSON.stringify(version || "")};
   const workBuddyLocale = ${JSON.stringify(locale || "")};
