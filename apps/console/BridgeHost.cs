@@ -139,7 +139,13 @@ internal sealed class BridgeHost : IDisposable
         psi.ArgumentList.Add(settings.CdpPort.ToString());
         psi.ArgumentList.Add("--log-path");
         psi.ArgumentList.Add(Path.Combine(tempDir, $"bridge-{port}.log"));
-        if (!string.IsNullOrWhiteSpace(settings.PasswordHash))
+        // 仅本机访问时不需要密码：即使配置里还留着上次的 hash，也不传给桥接。
+        // 这样“切回仅本机”立刻恢复免登录，切回局域网时密码自动重新生效。
+        var loopbackOnly =
+            string.IsNullOrWhiteSpace(settings.ListenHost)
+            || string.Equals(settings.ListenHost, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(settings.ListenHost, "localhost", StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(settings.PasswordHash) && !loopbackOnly)
         {
             psi.ArgumentList.Add("--password-hash");
             psi.ArgumentList.Add(settings.PasswordHash);

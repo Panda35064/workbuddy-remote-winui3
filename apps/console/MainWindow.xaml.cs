@@ -975,6 +975,32 @@ public sealed partial class MainWindow : Window
         ShowSettingsInfo(InfoBarSeverity.Success, "已保存", "重新启动桥接后生效。");
     }
 
+    private void OnClearPasswordClick(object sender, RoutedEventArgs e)
+    {
+        if (!_settings.HasPassword)
+        {
+            ShowSettingsInfo(InfoBarSeverity.Informational, "当前没有密码", "还没有设置访问密码。");
+            return;
+        }
+
+        _settings.PasswordHash = "";
+        try
+        {
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            ShowSettingsError("写入配置文件失败：" + ex.Message);
+            return;
+        }
+
+        _hadPassword = false;
+        PasswordBox1.Password = string.Empty;
+        PasswordBox2.Password = string.Empty;
+        AppendLog("访问密码已清除。");
+        ShowSettingsInfo(InfoBarSeverity.Success, "已清除访问密码", "重新启动桥接后生效。");
+    }
+
     private static int? ReadPort(double value)
     {
         if (double.IsNaN(value))

@@ -459,7 +459,7 @@
                         <local:SettingsCard
                             Glyph="&#xE72E;"
                             Header="访问密码"
-                            Description="留空表示不修改；至少 4 位">
+                            Description="留空表示不修改；仅本机访问时不需要密码；至少 4 位">
                             <local:SettingsCard.CardContent>
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <PasswordBox
@@ -470,6 +470,11 @@
                                         x:Name="PasswordBox2"
                                         Width="180"
                                         PlaceholderText="确认密码" />
+                                    <Button
+                                        x:Name="ClearPasswordButton"
+                                        Content="清除"
+                                        Click="OnClearPasswordClick"
+                                        VerticalAlignment="Center" />
                                 </StackPanel>
                             </local:SettingsCard.CardContent>
                         </local:SettingsCard>

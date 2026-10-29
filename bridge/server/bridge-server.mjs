@@ -124,6 +124,29 @@ const ROOT_RELATIVE_PROXY_PATH_PATTERN =
 const ESCAPED_ROOT_RELATIVE_PROXY_PATH_PATTERN =
   /(["'`])\\\/(?!\\\/)(?=(?:static|doc|sheet|slide|form|desktop|tools|tdoc)\b)/giu;
 
+/** 只对"新建任务/发送消息"记录参数结构，避免把正文或凭据写进日志。 */
+function summarizeInvokeArgs(channel, args) {
+  const name = String(channel || "");
+  if (name !== "wb:conversations:create" && name !== "wb:conversations:sendPrompt") {
+    return undefined;
+  }
+  const list = Array.isArray(args) ? args : [];
+  return list.map((item) => {
+    if (typeof item === "string") {
+      return "str:" + item.slice(0, 48);
+    }
+    if (item && typeof item === "object") {
+      return {
+        keys: Object.keys(item).slice(0, 14),
+        promptLength: typeof item.prompt === "string" ? item.prompt.length : undefined,
+        blockCount: Array.isArray(item.promptContentBlocks) ? item.promptContentBlocks.length : undefined,
+        transport: typeof item.transport === "string" ? item.transport : undefined,
+      };
+    }
+    return typeof item;
+  });
+}
+
 function readPositiveIntegerEnv(names, fallback) {
   const candidates = Array.isArray(names) ? names : [names];
   for (const name of candidates) {
@@ -1744,6 +1767,7 @@ function attachWebSocketServer(server, runtime, auth) {
             channel: message.channel,
             via: message.via || "",
             argCount: Array.isArray(message.args) ? message.args.length : 0,
+            argsInfo: summarizeInvokeArgs(message.channel, message.args),
           });
           if (String(message.channel || "").startsWith("wb:http:")) {
             logger.debug("desktop_host.http", "Forwarding host http channel", {
