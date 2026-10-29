@@ -4291,6 +4291,25 @@ function renderWorkBuddyNativeShimJs({
     ) {
       activeConversationId = requestedConversationId;
     }
+    // 新建任务：create 成功即代表前端要切到新会话，立即把当前会话设为新 id。
+    // 否则 activeConversationId 还停留在旧会话，旧会话的推送事件会一路放行、把页面拽回去。
+    if (channel === "wb:conversations:create") {
+      return request({
+        type: "desktop-host-invoke",
+        via: via || "",
+        channel: channel,
+        args: args,
+      }).then(function (result) {
+        try {
+          var createdId = result && result.info && result.info.id;
+          if (typeof createdId === "string" && createdId) {
+            activeConversationId = createdId;
+          }
+        } catch (error) {
+        }
+        return result;
+      });
+    }
     if (fileManagerEnabled && (channel === "dialog:pickFolder" || channel === "window:selectDirectory")) {
       return pickFolderForRemoteHost(args);
     }
