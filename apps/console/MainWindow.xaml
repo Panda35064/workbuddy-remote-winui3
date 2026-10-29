@@ -235,6 +235,22 @@
                                                 Style="{StaticResource CaptionTextBlockStyle}"
                                                 Text="—" />
                                         </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock
+                                                Text="构建"
+                                                Style="{StaticResource CaptionTextBlockStyle}"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock
+                                                x:Name="BuildText"
+                                                Grid.Column="1"
+                                                HorizontalAlignment="Right"
+                                                Style="{StaticResource CaptionTextBlockStyle}"
+                                                Text="—" />
+                                        </Grid>
                                     </StackPanel>
                                 </StackPanel>
                             </Border>

@@ -552,7 +552,81 @@ public sealed partial class MainWindow : Window
         PortText.Text = _settings.BridgePort.ToString();
         VersionText.Text = WorkBuddyLocator.DescribeInstalledVersion(_settings.WorkBuddyExePath);
         CdpText.Text = _settings.CdpPort.ToString();
+        BuildText.Text = DescribeBuild();
         LogPathText.Text = _settings.RuntimeTempDir;
+    }
+
+    /// <summary>CI 构建显示 commit 与编译时间，安装版显示发布版本号。</summary>
+    private static string DescribeBuild()
+    {
+        var exePath = Environment.ProcessPath ?? "";
+        var version = typeof(MainWindow).Assembly.GetName().Version;
+        var versionText = version is null ? "2.0.0" : version.ToString(3);
+        var installedRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs",
+            "WorkBuddyRemote");
+        if (exePath.StartsWith(installedRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Release {versionText}";
+        }
+
+        var built = File.Exists(exePath) ? File.GetLastWriteTime(exePath).ToString("MM-dd HH:mm") : "";
+        var commit = TryReadGitCommit(exePath);
+        if (string.IsNullOrEmpty(commit))
+        {
+            return string.IsNullOrEmpty(built) ? "CI" : $"CI · {built}";
+        }
+        return string.IsNullOrEmpty(built) ? $"CI {commit}" : $"CI {commit} · {built}";
+    }
+
+    private static string TryReadGitCommit(string startPath)
+    {
+        try
+        {
+            var directory = new DirectoryInfo(Path.GetDirectoryName(startPath) ?? "");
+            for (var depth = 0; directory is not null && depth < 8; depth += 1, directory = directory.Parent)
+            {
+                var headPath = Path.Combine(directory.FullName, ".git", "HEAD");
+                if (!File.Exists(headPath))
+                {
+                    continue;
+                }
+
+                var head = File.ReadAllText(headPath).Trim();
+                if (!head.StartsWith("ref:", StringComparison.Ordinal))
+                {
+                    return head.Length >= 7 ? head[..7] : head;
+                }
+
+                var target = head[4..].Trim();
+                var refPath = Path.Combine(directory.FullName, ".git", target.Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(refPath))
+                {
+                    var sha = File.ReadAllText(refPath).Trim();
+                    return sha.Length >= 7 ? sha[..7] : sha;
+                }
+
+                var packedPath = Path.Combine(directory.FullName, ".git", "packed-refs");
+                if (File.Exists(packedPath))
+                {
+                    foreach (var line in File.ReadAllLines(packedPath))
+                    {
+                        var parts = line.Split(' ');
+                        if (parts.Length == 2 && parts[1] == target)
+                        {
+                            return parts[0].Length >= 7 ? parts[0][..7] : parts[0];
+                        }
+                    }
+                }
+                return "";
+            }
+        }
+        catch
+        {
+            // 读不到就当作没有，不影响主流程。
+        }
+        return "";
     }
 
     /// <summary>本机版本 + 与适配版本的比对提示，升级 WorkBuddy 后一眼能看出是否需要复验。</summary>
