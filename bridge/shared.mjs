@@ -75,7 +75,10 @@ function parseArgs(argv) {
  * 自定义安装目录（例如 D:\Program Files\Dev\WorkBuddy）不在固定候选里，所以先把用户配置里的路径用上。
  */
 function resolveConfiguredWorkBuddyExe() {
-  const configPath = process.env.WORKBUDDY_REMOTE_CONFIG;
+  // 控制台会显式传 WORKBUDDY_REMOTE_CONFIG；手工/脚本启动时按默认安装位置兜底。
+  const configPath =
+    process.env.WORKBUDDY_REMOTE_CONFIG ||
+    path.join(process.env.APPDATA || "", "WorkBuddyRemote", "config.json");
   if (!configPath) {
     return "";
   }

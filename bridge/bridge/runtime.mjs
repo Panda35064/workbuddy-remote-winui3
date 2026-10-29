@@ -1361,7 +1361,15 @@ class BridgeRuntime {
       throw new Error("desktop host channel is required");
     }
     await this.ensureCdpReady();
-    const argsJson = JSON.stringify(Array.isArray(args) ? args : []).replace(
+    // WorkBuddy 5.9 起 conversations:create 的 options 参数（第三个实参）必须带 transport，
+    // 否则主进程内部会抛 "Cannot read properties of undefined (reading 'transport')"，
+    // 表现就是网页端“新建任务”发送无反应、不跳转、历史里也没有消息。
+    // 官方前端在浏览器里只传 {cwd}，这里补成本地 transport。
+    const normalizedArgs = Array.isArray(args) ? args.slice() : [];
+    if (name === "wb:conversations:create" && normalizedArgs.length < 2) {
+      normalizedArgs.push({ transport: "local" });
+    }
+    const argsJson = JSON.stringify(normalizedArgs).replace(
       /\u2028/gu,
       "\\u2028"
     ).replace(/\u2029/gu, "\\u2029");
