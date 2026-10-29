@@ -1355,6 +1355,58 @@ class BridgeRuntime {
     );
   }
 
+  /**
+   * 网页端「新建任务」只调 conversations:create，不会像桌面端那样再调一次 sendPrompt，
+   * 结果是会话建出来却停在 idle：没有回复、也没有消息。
+   * 这里在 create 成功后把首条内容补发一次，等价于桌面端 createNewSession 之后的首次发送。
+   */
+  autoSendFirstPrompt(created, args) {
+    const conversationId = created && created.info && created.info.id;
+    if (!conversationId) {
+      return;
+    }
+    const list = Array.isArray(args) ? args : [];
+    const payload = list.find(
+      (item) => item && typeof item === "object" && Array.isArray(item.promptContentBlocks)
+    );
+    if (!payload || payload.promptContentBlocks.length === 0) {
+      return;
+    }
+    const blocks = payload.promptContentBlocks;
+    const options = {
+      mode: typeof payload.mode === "string" && payload.mode ? payload.mode : "craft",
+      _meta: {},
+      clientRequestId: "remote-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+      clientTimestamp: Date.now(),
+      traceId: "remote-create-" + conversationId.slice(0, 8),
+    };
+    if (typeof payload.model === "string" && payload.model.trim()) {
+      options.modelId = payload.model.trim();
+    }
+
+    // 让 create 的响应先回到页面（前端会据此导航），再补发首条消息。
+    setTimeout(() => {
+      // sendPrompt 只在 preload 的通用 __wbInvoke 上有实现，workbuddyDesktop.invoke 会报
+      // "Unsupported desktop command"。
+      this.invokeDesktopHost("wb:conversations:sendPrompt", [null, conversationId, blocks, options], "preload")
+        .then((res) => {
+          logger.info("desktop_host.prompt_autosent", "Auto-sent first prompt after create", {
+            conversationId,
+            blocks: blocks.length,
+            modelId: options.modelId || "",
+            ok: !(res && res.__wbError),
+            error: res && res.__wbError ? String(res.message || "").slice(0, 200) : "",
+          });
+        })
+        .catch((error) => {
+          logger.warn("desktop_host.prompt_autosend_failed", "Auto-send first prompt failed", {
+            conversationId,
+            error,
+          });
+        });
+    }, 600);
+  }
+
   async invokeDesktopHost(channel, args, via = "") {
     const name = typeof channel === "string" ? channel.trim() : "";
     if (!name) {
@@ -1366,8 +1418,36 @@ class BridgeRuntime {
     // 表现就是网页端“新建任务”发送无反应、不跳转、历史里也没有消息。
     // 官方前端在浏览器里只传 {cwd}，这里补成本地 transport。
     const normalizedArgs = Array.isArray(args) ? args.slice() : [];
-    if (name === "wb:conversations:create" && normalizedArgs.length < 2) {
-      normalizedArgs.push({ transport: "local" });
+    if (name === "wb:conversations:create") {
+      // 网页端新建任务时只带 promptContentBlocks，prompt 为空。桌面端两者都会带，
+      // 主进程靠 prompt 才会把首条消息当成一次运行提交；缺了它会话会停在 idle，
+      // 界面表现就是“会话建了但没有回复”。
+      const payloads = normalizedArgs.filter((item) => item && typeof item === "object" && !Array.isArray(item));
+      for (const payload of payloads) {
+        if (!Array.isArray(payload.promptContentBlocks)) {
+          continue;
+        }
+        const hasPrompt = typeof payload.prompt === "string" && payload.prompt.trim().length > 0;
+        if (hasPrompt) {
+          break;
+        }
+        const text = payload.promptContentBlocks
+          .filter((block) => block && block.type === "text" && typeof block.text === "string")
+          .map((block) => block.text)
+          .join("\n")
+          .trim();
+        if (text) {
+          payload.prompt = text;
+          logger.info("desktop_host.create_prompt_filled", "Filled missing prompt from content blocks", {
+            length: text.length,
+            blocks: payload.promptContentBlocks.length,
+          });
+        }
+        break;
+      }
+      if (normalizedArgs.length < 2) {
+        normalizedArgs.push({ transport: "local" });
+      }
     }
     const argsJson = JSON.stringify(normalizedArgs).replace(
       /\u2028/gu,
@@ -1388,6 +1468,9 @@ class BridgeRuntime {
           message: String(result.message || "").slice(0, 300),
           code: String(result.code || ""),
         });
+      }
+      if (name === "wb:conversations:create") {
+        this.autoSendFirstPrompt(result, normalizedArgs);
       }
       return rewriteExtensionEntryUrls(name, result);
     } catch (error) {

@@ -137,10 +137,12 @@ function summarizeInvokeArgs(channel, args) {
     }
     if (item && typeof item === "object") {
       return {
-        keys: Object.keys(item).slice(0, 14),
-        promptLength: typeof item.prompt === "string" ? item.prompt.length : undefined,
-        blockCount: Array.isArray(item.promptContentBlocks) ? item.promptContentBlocks.length : undefined,
-        transport: typeof item.transport === "string" ? item.transport : undefined,
+        keys: Object.keys(item).slice(0, 14).join(","),
+        promptLength: typeof item.prompt === "string" ? item.prompt.length : -1,
+        blocks: Array.isArray(item.promptContentBlocks)
+          ? item.promptContentBlocks.map((block) => (block && block.type) || "?").join(",")
+          : "",
+        transport: typeof item.transport === "string" ? item.transport : "",
       };
     }
     return typeof item;
