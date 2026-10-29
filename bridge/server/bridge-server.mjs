@@ -1402,6 +1402,19 @@ function createRequestHandler(runtime, auth) {
       }
 
       if (requestUrl.pathname === "/") {
+        // 直接返回页面而不是 302：远程页面的路由基线需要停在 "/"，
+        // 重定向回 /agent-manager/ 会让内存路由的初始位置又对不上路由表。
+        const html = await workBuddyAsar.readFile("renderer/index.html");
+        if (html) {
+          text(
+            res,
+            200,
+            renderWorkBuddyNativeHtml(withFaviconLinks(html.toString("utf8"))),
+            "text/html; charset=utf-8",
+            HTML_CACHE_CONTROL
+          );
+          return;
+        }
         res.writeHead(302, { Location: "/agent-manager/" });
         res.end();
         return;
