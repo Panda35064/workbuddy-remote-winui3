@@ -1382,6 +1382,13 @@ class BridgeRuntime {
     // 网页端就会看到“加载失败”。这里按通道放宽超时，并给只读通道补一次重试。
     try {
       const result = await this.cdp.evaluate(expression, { timeoutMs });
+      if (result && result.__wbError) {
+        logger.warn("desktop_host.invoke_error", "Desktop host channel returned an error", {
+          channel: name,
+          message: String(result.message || "").slice(0, 300),
+          code: String(result.code || ""),
+        });
+      }
       return rewriteExtensionEntryUrls(name, result);
     } catch (error) {
       if (!isDesktopHostRetrySafe(name) || !isTimeoutError(error)) {

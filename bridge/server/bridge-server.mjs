@@ -1732,6 +1732,13 @@ function attachWebSocketServer(server, runtime, auth) {
       });
 
       try {
+        if (message.type === "browser-log") {
+          logger.info("browser.log", "Browser console message", {
+            level: String(message.level || ""),
+            text: String(message.text || "").slice(0, 500),
+          });
+          return;
+        }
         if (message.type === "desktop-host-invoke") {
           logger.info("desktop_host.invoke", "Forwarding desktop host channel", {
             channel: message.channel,
