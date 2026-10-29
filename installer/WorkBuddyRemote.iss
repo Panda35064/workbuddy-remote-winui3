@@ -85,7 +85,8 @@ Source: "{#Payload}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cr
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{userstartup}\WorkBuddyRemote.lnk"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--autostart"; WorkingDir: "{app}"; Tasks: startup
+; 注意：{userstartup} 下的文件名不要带 .lnk，Inno 会自动补扩展名
+Name: "{userstartup}\WorkBuddyRemote"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--autostart"; WorkingDir: "{app}"; Tasks: startup
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
