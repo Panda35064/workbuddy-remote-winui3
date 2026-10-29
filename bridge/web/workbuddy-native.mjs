@@ -3944,8 +3944,22 @@ function renderWorkBuddyNativeShimJs({
     };
   }
 
+  // 远程页面和桌面端共享同一条事件流。桌面端正在运行的会话（例如用户自己的对话）
+  // 会持续推事件，前端收到后会把“当前会话”同步成桌面端的活动会话，
+  // 表现为：刚跳到新会话，几秒后又被拉回原来那个会话。这里只放行当前会话的事件。
+  var activeConversationId = "";
+
   function deliverDesktopEvent(event, payload) {
     if (!desktopEventSubscribers.length) {
+      return;
+    }
+    var eventConversationId =
+      payload && (payload.conversationId || (payload.payload && payload.payload.conversationId));
+    if (
+      activeConversationId &&
+      eventConversationId &&
+      String(eventConversationId) !== activeConversationId
+    ) {
       return;
     }
     for (var index = 0; index < desktopEventSubscribers.length; index += 1) {
@@ -4250,6 +4264,21 @@ function renderWorkBuddyNativeShimJs({
   }
 
   function invokeDesktopChannel(channel, args, via) {
+    // 记住前端最近打开的会话，事件过滤用它判断“哪些事件属于当前页面”。
+    var firstArg = args && args[0];
+    var requestedConversationId =
+      typeof firstArg === "string"
+        ? firstArg
+        : firstArg && typeof firstArg === "object"
+          ? firstArg.conversationId || firstArg.id
+          : "";
+    if (
+      channel === "wb:conversations:get" &&
+      typeof requestedConversationId === "string" &&
+      requestedConversationId
+    ) {
+      activeConversationId = requestedConversationId;
+    }
     if (fileManagerEnabled && (channel === "dialog:pickFolder" || channel === "window:selectDirectory")) {
       return pickFolderForRemoteHost(args);
     }
