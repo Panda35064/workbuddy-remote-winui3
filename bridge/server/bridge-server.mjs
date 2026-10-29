@@ -1707,6 +1707,25 @@ function createRequestHandler(runtime, auth) {
           );
           return;
         }
+
+        // SPA 路由回退：/agent-manager/conversation/<id> 这类前端路由在 asar 里没有对应文件，
+        // 必须回 index.html，否则浏览器拿到 404，前端导航会失败（表现为“发送后不跳转”）。
+        // 带扩展名的请求（js/css/图片）按真 404 处理，避免把 HTML 当脚本返回。
+        const lastSegment = requestUrl.pathname.slice(requestUrl.pathname.lastIndexOf("/") + 1);
+        const looksLikeAsset = /\.[a-z0-9]{1,8}$/iu.test(lastSegment);
+        if (!looksLikeAsset) {
+          const html = await workBuddyAsar.readFile("renderer/index.html");
+          if (html) {
+            text(
+              res,
+              200,
+              renderWorkBuddyNativeHtml(withFaviconLinks(html.toString("utf8"))),
+              "text/html; charset=utf-8",
+              HTML_CACHE_CONTROL
+            );
+            return;
+          }
+        }
       }
 
       json(res, 404, { error: "Not found" });
