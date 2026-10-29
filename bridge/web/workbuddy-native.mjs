@@ -3960,6 +3960,12 @@ function renderWorkBuddyNativeShimJs({
     var isLifecycleEvent = /conversation:(created|deleted|archived|unarchived|pinned|unpinned)/i.test(
       String(event || "")
     );
+    if (isLifecycleEvent && /created/i.test(String(event))) {
+      try {
+        reportBrowserLog("event-created", "created-event " + String(event) + " " + JSON.stringify(payload).slice(0, 500));
+      } catch (error) {
+      }
+    }
     if (
       !isLifecycleEvent &&
       activeConversationId &&

@@ -2529,6 +2529,15 @@ class BridgeRuntime {
       if (!this.desktopEventSockets.size || typeof payload.event !== "string") {
         return;
       }
+      // 会话相关事件记录 name + conversationId，排查“新建任务跳错会话”必须要这份数据。
+      const eventConversationId =
+        (payload.payload && (payload.payload.conversationId || payload.payload.conversationID)) || "";
+      if (/conversation/i.test(payload.event) || eventConversationId) {
+        logger.info("desktop_host.event", "Forwarding desktop event", {
+          event: payload.event,
+          conversationId: String(eventConversationId).slice(0, 40),
+        });
+      }
       const message = {
         type: "desktop-host-event",
         event: payload.event,
