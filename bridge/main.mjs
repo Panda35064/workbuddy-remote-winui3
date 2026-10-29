@@ -1,5 +1,5 @@
 import { BridgeRuntime } from "./bridge/runtime.mjs";
-import { logger } from "./logger.mjs";
+import { logger, setEventLogPath } from "./logger.mjs";
 import { parseArgs } from "./shared.mjs";
 import { startBridgeServer } from "./server/bridge-server.mjs";
 import path from "node:path";
@@ -96,6 +96,11 @@ function installProcessGuards() {
 async function main() {
   installProcessGuards();
   const options = parseArgs(process.argv.slice(2));
+  // 没显式指定事件日志时，跟随 --log-path 落在同一目录：bridge-<port>.events.log。
+  // 排查“网页端某个操作没反应”这类问题时，需要能看到通道级调用记录。
+  if (!process.env.WORKBUDDY_REMOTE_EVENT_LOG_PATH && options.logPath) {
+    setEventLogPath(options.logPath.replace(/\.log$/i, "") + ".events.log");
+  }
   const runtime = new BridgeRuntime(options);
   const server = await startBridgeServer(runtime, options);
   activeResources.push(server);

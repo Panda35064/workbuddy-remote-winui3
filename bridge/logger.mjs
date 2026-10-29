@@ -16,7 +16,14 @@ function normalizeLevel(level) {
 }
 
 const activeLevel = normalizeLevel(process.env.WORKBUDDY_REMOTE_LOG_LEVEL);
-const eventLogPath = process.env.WORKBUDDY_REMOTE_EVENT_LOG_PATH || "";
+let eventLogPath = process.env.WORKBUDDY_REMOTE_EVENT_LOG_PATH || "";
+
+/** 控制台/入口在解析完参数后调用，把日志落到运行时目录，方便事后排查。 */
+function setEventLogPath(nextPath) {
+  if (typeof nextPath === "string" && nextPath.trim()) {
+    eventLogPath = nextPath.trim();
+  }
+}
 
 function shouldLog(level) {
   return LEVELS.get(level) >= LEVELS.get(activeLevel);
@@ -108,4 +115,4 @@ const logger = {
   error: (event, message, details) => log("error", event, message, details),
 };
 
-export { logger, summarizeMessage, summarizeValue };
+export { logger, setEventLogPath, summarizeMessage, summarizeValue };
