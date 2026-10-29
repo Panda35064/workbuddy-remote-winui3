@@ -1728,6 +1728,21 @@ function createRequestHandler(runtime, auth) {
         }
       }
 
+      // 前端路由（不带 /agent-manager 前缀的情形）同样回 index.html。
+      if (requestUrl.pathname.startsWith("/conversation/")) {
+        const html = await workBuddyAsar.readFile("renderer/index.html");
+        if (html) {
+          text(
+            res,
+            200,
+            renderWorkBuddyNativeHtml(withFaviconLinks(html.toString("utf8"))),
+            "text/html; charset=utf-8",
+            HTML_CACHE_CONTROL
+          );
+          return;
+        }
+      }
+
       json(res, 404, { error: "Not found" });
     } catch (error) {
       if (res.headersSent) {

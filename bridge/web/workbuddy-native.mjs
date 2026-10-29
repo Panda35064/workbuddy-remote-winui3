@@ -4129,6 +4129,28 @@ function renderWorkBuddyNativeShimJs({
       }
       return originalError.apply(console, arguments);
     };
+    // 路由/发送相关的 info 级日志也要上报，排查“发送后不跳转”只能靠这些。
+    var originalLog = console.log;
+    console.log = function () {
+      try {
+        var parts = Array.prototype.map.call(arguments, function (value) {
+          if (typeof value === "string") {
+            return value;
+          }
+          try {
+            return JSON.stringify(value);
+          } catch (error) {
+            return String(value);
+          }
+        });
+        var text = parts.join(" ");
+        if (/Router|navigate|location changed|session-create|createConversation|handleNewTask|openConversation/i.test(text)) {
+          reportBrowserLog("info", text);
+        }
+      } catch (error) {
+      }
+      return originalLog.apply(console, arguments);
+    };
     window.addEventListener("error", function (event) {
       try {
         reportBrowserLog("uncaught", String(event && event.message) + " @ " + String(event && event.filename) + ":" + String(event && event.lineno));
