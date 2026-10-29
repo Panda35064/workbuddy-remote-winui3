@@ -4275,6 +4275,55 @@ function renderWorkBuddyNativeShimJs({
     });
   }
 
+  // 远程页面用的是内存路由：navigate 之后 location 变了、视图却不重渲染（界面停在首页）。
+  // 退而求其次——在左侧列表里找到这个会话并模拟点击，等于用户手动点一下，
+  // 这是唯一验证过能正确切换视图的路径。
+  function openConversationFromList(title, conversationId) {
+    try {
+      var byIdSelectors = [
+        '[data-conversation-id="' + conversationId + '"]',
+        '[data-id="' + conversationId + '"]',
+        'a[href*="' + conversationId + '"]',
+      ];
+      for (var index = 0; index < byIdSelectors.length; index += 1) {
+        var hit = document.querySelector(byIdSelectors[index]);
+        if (hit) {
+          hit.click();
+          reportBrowserLog("nav-fix", "clicked by id");
+          return;
+        }
+      }
+
+      var keyword = String(title || "").trim();
+      if (!keyword) {
+        reportBrowserLog("nav-fix", "no title to match");
+        return;
+      }
+
+      var nodes = document.querySelectorAll("button, a, li, [role=button], [role=option], [role=treeitem]");
+      for (var i = 0; i < nodes.length; i += 1) {
+        var element = nodes[i];
+        var tag = String(element.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea") {
+          continue;
+        }
+        var content = String(element.textContent || "").trim();
+        if (!content || content.indexOf(keyword) < 0) {
+          continue;
+        }
+        if (element.offsetParent === null) {
+          continue;
+        }
+        element.click();
+        reportBrowserLog("nav-fix", "clicked by title: " + keyword.slice(0, 24));
+        return;
+      }
+      reportBrowserLog("nav-fix", "list item not found: " + keyword.slice(0, 24));
+    } catch (error) {
+      reportBrowserLog("nav-fix", "failed " + String(error && error.message));
+    }
+  }
+
   function invokeDesktopChannel(channel, args, via) {
     // 记住前端最近打开的会话，事件过滤用它判断“哪些事件属于当前页面”。
     var firstArg = args && args[0];
@@ -4304,6 +4353,12 @@ function renderWorkBuddyNativeShimJs({
           var createdId = result && result.info && result.info.id;
           if (typeof createdId === "string" && createdId) {
             activeConversationId = createdId;
+            var createdTitle = (result.info && result.info.title) || "";
+            // 远程页面的内存路由只更新 location、不重渲染视图（日志里 navigate 成功但界面停在首页）。
+            // 这里在列表刷新后模拟点击该会话——和用户手动点一下完全等价，是唯一验证过能切过去的路径。
+            setTimeout(function () {
+              openConversationFromList(createdTitle, createdId);
+            }, 1200);
           }
         } catch (error) {
         }
