@@ -3955,7 +3955,13 @@ function renderWorkBuddyNativeShimJs({
     }
     var eventConversationId =
       payload && (payload.conversationId || (payload.payload && payload.payload.conversationId));
+    // 新建/删除/归档属于“结构变化”，必须放行：前端靠 conversation:created 才能把
+    // 新会话加进列表并跳过去。过滤掉它会导致新建后又被拉回上一个会话。
+    var isLifecycleEvent = /conversation:(created|deleted|archived|unarchived|pinned|unpinned)/i.test(
+      String(event || "")
+    );
     if (
+      !isLifecycleEvent &&
       activeConversationId &&
       eventConversationId &&
       String(eventConversationId) !== activeConversationId
