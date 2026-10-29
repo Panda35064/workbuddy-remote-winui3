@@ -4242,6 +4242,11 @@ function renderWorkBuddyNativeShimJs({
         return Promise.resolve({ ok: true, windowId: "web-settings", web: true });
       }
     }
+    // 浏览器里没有独立的 WorkBuddy 窗口，多窗口消息在桌面端会 NOT_FOUND。
+    // 直接当作已投递，避免每次操作都刷一条错误、也可能打断调用链。
+    if (channel === "wb:windows:postMessage") {
+      return Promise.resolve({ ok: true, web: true });
+    }
     return request({
       type: "desktop-host-invoke",
       via: via || "",

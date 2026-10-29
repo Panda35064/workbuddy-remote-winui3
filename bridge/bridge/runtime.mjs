@@ -1469,7 +1469,24 @@ class BridgeRuntime {
           code: String(result.code || ""),
         });
       }
-      if (name === "wb:conversations:create") {
+      if (name === "wb:conversations:create" && result && result.info && result.info.id) {
+        // 浏览器侧前端按 ACP 的返回结构读 c.response.sessionId / c.activeSession，
+        // 而 host 通道返回的是 { info, configManager }。缺了这两个字段，前端拿不到
+        // 会话 id，既不导航到新会话、也不把它加进列表（表现为消息发出去了但页面不动）。
+        if (!result.response || typeof result.response !== "object") {
+          result.response = {};
+        }
+        if (!result.response.sessionId) {
+          result.response.sessionId = result.info.id;
+        }
+        if (!result.activeSession || typeof result.activeSession !== "object") {
+          result.activeSession = {
+            sessionId: result.info.id,
+            agentState: { cwd: (result.info.space && result.info.space.cwd) || "" },
+            availableModels: [],
+            currentModelId: "",
+          };
+        }
         this.autoSendFirstPrompt(result, normalizedArgs);
       }
       return rewriteExtensionEntryUrls(name, result);
