@@ -204,9 +204,7 @@ public sealed partial class MainWindow : Window
         if (path is null)
         {
             WorkDaddyStatusText.Text = "未找到 WorkDaddy，请手动填写程序路径";
-            AppendLog(
-                "WorkDaddy 检测失败：运行进程、App Paths、卸载注册表、开始菜单快捷方式、PATH、常见目录均未命中。"
-            );
+            AppendLog("WorkDaddy 检测失败：运行进程、卸载注册表、常见目录均未命中。");
             return;
         }
 
