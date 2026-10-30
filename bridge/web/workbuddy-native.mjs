@@ -3951,9 +3951,6 @@ function renderWorkBuddyNativeShimJs({
   var lastCreatedTitle = "";
 
   function deliverDesktopEvent(event, payload) {
-    if (!desktopEventSubscribers.length) {
-      return;
-    }
     var eventConversationId =
       payload && (payload.conversationId || (payload.payload && payload.payload.conversationId));
     // 新建/删除/归档属于“结构变化”，必须放行：前端靠 conversation:created 才能把
@@ -3961,19 +3958,22 @@ function renderWorkBuddyNativeShimJs({
     var isLifecycleEvent = /conversation:(created|deleted|archived|unarchived|pinned|unpinned)/i.test(
       String(event || "")
     );
+    // created 的点击兜底放在“订阅者检查”之前：早期事件可能还没有订阅者，
+    // 而跳转不能因此被跳过（手动点击列表项已验证可用）。
     if (isLifecycleEvent && /created/i.test(String(event))) {
       try {
         reportBrowserLog("event-created", "created-event " + String(event) + " " + JSON.stringify(payload).slice(0, 500));
       } catch (error) {
       }
-      // 远程页面的内存路由只改 location、不重渲染视图（navigate 成功但界面停在首页）。
-      // 列表刷新后模拟点击该会话，等价于用户手动点一下——已验证手动点击能正常打开。
       var createdConversationId = String(eventConversationId || "");
       if (createdConversationId) {
         setTimeout(function () {
           openConversationFromList(lastCreatedTitle, createdConversationId);
-        }, 1500);
+        }, 2000);
       }
+    }
+    if (!desktopEventSubscribers.length) {
+      return;
     }
     if (
       !isLifecycleEvent &&
@@ -4370,6 +4370,22 @@ function renderWorkBuddyNativeShimJs({
     // 否则 activeConversationId 还停留在旧会话，旧会话的推送事件会一路放行、把页面拽回去。
     if (channel === "wb:conversations:create") {
       reportBrowserLog("nav-fix", "create entry");
+      // 这个通道的响应在远程链路上偶尔回不来，不能把跳转挂在它的 then 上。
+      // 直接取请求参数里的标题，等列表刷新后点一下新会话。
+      var requestedTitle = "";
+      try {
+        for (var argIndex = 0; argIndex < (args || []).length; argIndex += 1) {
+          var candidate = args[argIndex];
+          if (candidate && typeof candidate === "object" && typeof candidate.title === "string" && candidate.title) {
+            requestedTitle = candidate.title;
+            break;
+          }
+        }
+      } catch (error) {
+      }
+      setTimeout(function () {
+        openConversationFromList(requestedTitle, "");
+      }, 3500);
       return request({
         type: "desktop-host-invoke",
         via: via || "",
@@ -4389,6 +4405,11 @@ function renderWorkBuddyNativeShimJs({
         } catch (error) {
         }
         return result;
+      }).catch(function (error) {
+        // 响应链路上任何一环失败都要留痕：之前 then 里只处理 resolve，
+        // reject 的时候静默无日志，排查“新建后不跳转”会漏掉关键证据。
+        reportBrowserLog("nav-fix", "create rejected: " + String((error && error.message) || error));
+        throw error;
       });
     }
     if (fileManagerEnabled && (channel === "dialog:pickFolder" || channel === "window:selectDirectory")) {
