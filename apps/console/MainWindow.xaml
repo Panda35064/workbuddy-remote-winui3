@@ -814,7 +814,8 @@
             ContextMenuMode="SecondWindow"
             DoubleClickCommand="{x:Bind ShowFromTrayCommand}">
             <tb:TaskbarIcon.ContextFlyout>
-                <MenuFlyout>
+                <!-- 托盘默认在屏幕底部，菜单应从下往上展开（和系统托盘菜单一致）。 -->
+                <MenuFlyout Placement="Top">
                     <MenuFlyoutItem Text="打开控制台" Click="OnTrayOpenClick">
                         <MenuFlyoutItem.Icon>
                             <FontIcon Glyph="&#xE8A7;" />
