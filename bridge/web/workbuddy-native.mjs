@@ -4205,7 +4205,7 @@ function renderWorkBuddyNativeShimJs({
     installBrowserLogReporting();
     // 启动探针：确认页面里跑的是新版 shim（排查远程问题时最怕改了半天没生效）。
     setTimeout(function () {
-      reportBrowserLog("shim-boot", "nav-fix-v3 loaded");
+      reportBrowserLog("shim-boot", "shim-v5 (create-entry + click-fallback)");
     }, 2500);
     window.addEventListener("message", handleDaemonTransportRequest);
     installExtensionAssetBridge();
