@@ -3949,6 +3949,7 @@ function renderWorkBuddyNativeShimJs({
   // 表现为：刚跳到新会话，几秒后又被拉回原来那个会话。这里只放行当前会话的事件。
   var activeConversationId = "";
   var lastCreatedTitle = "";
+  var navFixDone = false;
 
   function deliverDesktopEvent(event, payload) {
     var eventConversationId =
@@ -3968,8 +3969,8 @@ function renderWorkBuddyNativeShimJs({
       var createdConversationId = String(eventConversationId || "");
       if (createdConversationId) {
         setTimeout(function () {
-          openConversationFromList(lastCreatedTitle, createdConversationId);
-        }, 2000);
+          openConversationFromList(lastCreatedTitle, createdConversationId, 10);
+        }, 200);
       }
     }
     if (!desktopEventSubscribers.length) {
@@ -4291,13 +4292,18 @@ function renderWorkBuddyNativeShimJs({
   // 远程页面用的是内存路由：navigate 之后 location 变了、视图却不重渲染（界面停在首页）。
   // 退而求其次——在左侧列表里找到这个会话并模拟点击，等于用户手动点一下，
   // 这是唯一验证过能正确切换视图的路径。
-  function openConversationFromList(title, conversationId) {
+  function openConversationFromList(title, conversationId, attemptsLeft) {
+    if (navFixDone) {
+      return;
+    }
     try {
       var keyword = String(title || "").trim();
-      reportBrowserLog(
-        "nav-fix",
-        "attempt id=" + String(conversationId || "").slice(0, 12) + " title=" + keyword.slice(0, 20)
-      );
+      if (attemptsLeft >= 10) {
+        reportBrowserLog(
+          "nav-fix",
+          "attempt id=" + String(conversationId || "").slice(0, 12) + " title=" + keyword.slice(0, 20)
+        );
+      }
 
       var byIdSelectors = [
         '[data-conversation-id="' + conversationId + '"]',
@@ -4307,6 +4313,7 @@ function renderWorkBuddyNativeShimJs({
       for (var index = 0; index < byIdSelectors.length; index += 1) {
         var hit = document.querySelector(byIdSelectors[index]);
         if (hit) {
+          navFixDone = true;
           hit.click();
           reportBrowserLog("nav-fix", "clicked by id");
           return;
@@ -4314,7 +4321,15 @@ function renderWorkBuddyNativeShimJs({
       }
 
       if (!keyword) {
-        reportBrowserLog("nav-fix", "no title to match");
+        // 没有标题兜底时按“列表第一项”找：新会话创建后会置顶。
+        var firstOption = document.querySelector("[role=option], [role=treeitem], li");
+        if (firstOption && firstOption.offsetParent !== null) {
+          navFixDone = true;
+          firstOption.click();
+          reportBrowserLog("nav-fix", "clicked first item");
+          return;
+        }
+        scheduleNavRetry(title, conversationId, attemptsLeft);
         return;
       }
 
@@ -4340,14 +4355,27 @@ function renderWorkBuddyNativeShimJs({
       }
 
       if (best) {
+        navFixDone = true;
         best.element.click();
         reportBrowserLog("nav-fix", "clicked by title, len=" + best.length);
         return;
       }
-      reportBrowserLog("nav-fix", "list item not found: " + keyword.slice(0, 24));
+      scheduleNavRetry(title, conversationId, attemptsLeft);
     } catch (error) {
       reportBrowserLog("nav-fix", "failed " + String(error && error.message));
     }
+  }
+
+  // 列表项还没渲染出来就 250ms 后再找，命中即点；总共约 10 次（2.5s），
+  // 覆盖“回车瞬间列表还在刷新”的时间窗。
+  function scheduleNavRetry(title, conversationId, attemptsLeft) {
+    if (navFixDone || attemptsLeft <= 0) {
+      reportBrowserLog("nav-fix", "list item not found: " + String(title || "").slice(0, 24));
+      return;
+    }
+    setTimeout(function () {
+      openConversationFromList(title, conversationId, attemptsLeft - 1);
+    }, 250);
   }
 
   function invokeDesktopChannel(channel, args, via) {
@@ -4384,8 +4412,9 @@ function renderWorkBuddyNativeShimJs({
       } catch (error) {
       }
       setTimeout(function () {
-        openConversationFromList(requestedTitle, "");
-      }, 3500);
+        navFixDone = false;
+        openConversationFromList(requestedTitle, "", 10);
+      }, 500);
       return request({
         type: "desktop-host-invoke",
         via: via || "",
