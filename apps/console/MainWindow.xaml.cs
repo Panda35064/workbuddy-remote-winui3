@@ -124,16 +124,18 @@ public sealed partial class MainWindow : Window
 
         if (_autostart)
         {
-            // 开机静默启动：先尝试接管已有桥接，没有再自己起。
+            // 开机静默启动：WorkBuddy 是 GUI 程序，CreateNoWindow 对它无效，
+            // 需要让桥接连上后主动把它的窗口收起来（只在内存里改，不写回配置）。
+            _settings.HideWorkBuddyWindowAfterStart = true;
+
+            // 先尝试接管已有桥接，没有再自己起。
             if (!await NetProbe.HttpOkAsync(_settings.HealthUrl))
             {
                 await RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: false));
             }
 
-            if (AppWindow.Presenter is OverlappedPresenter presenter)
-            {
-                presenter.Minimize();
-            }
+            // 开机静默启动：不显示窗口、不弹任何提示，只在托盘留一个图标。
+            AppWindow.Hide();
         }
         else if (AppWindow.Presenter is OverlappedPresenter overlapped
                  && overlapped.State == OverlappedPresenterState.Minimized)
@@ -175,45 +177,149 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var menu = new MenuFlyout();
-        var openItem = new MenuFlyoutItem { Text = "打开控制台", Icon = new FontIcon { Glyph = "\uE8A7" } };
-        openItem.Click += (_, _) => ShowFromTray();
-        menu.Items.Add(openItem);
-
-        var webItem = new MenuFlyoutItem { Text = "打开网页", Icon = new FontIcon { Glyph = "\uE774" } };
-        webItem.Click += (_, _) => OpenUrl();
-        menu.Items.Add(webItem);
-        menu.Items.Add(new MenuFlyoutSeparator());
-
-        if (_bridge.IsRunning)
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        var hmenu = CreatePopupMenu();
+        if (hmenu == IntPtr.Zero)
         {
-            var stopItem = new MenuFlyoutItem { Text = "停止桥接", Icon = new FontIcon { Glyph = "\uE71A" } };
-            stopItem.Click += async (_, _) => await RunExclusiveAsync("停止中", StopCoreAsync);
-            menu.Items.Add(stopItem);
-        }
-        else
-        {
-            var startItem = new MenuFlyoutItem { Text = "启动桥接", Icon = new FontIcon { Glyph = "\uE768" } };
-            startItem.Click += async (_, _) => await RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: false));
-            menu.Items.Add(startItem);
+            return;
         }
 
-        menu.Items.Add(new MenuFlyoutSeparator());
-        var exitItem = new MenuFlyoutItem { Text = "退出", Icon = new FontIcon { Glyph = "\uE7E8" } };
-        exitItem.Click += (_, _) => ExitApplication();
-        menu.Items.Add(exitItem);
+        const uint MfString = 0x00000000;
+        const uint MfSeparator = 0x00000800;
+        const uint MfGrayed = 0x00000001;
+        const uint TpmReturnCmd = 0x0100;
+        const uint TpmRightButton = 0x0002;
+
+        const int cmdOpen = 1;
+        const int cmdWeb = 2;
+        const int cmdToggleBridge = 3;
+        const int cmdRestartBridge = 4;
+        const int cmdExit = 5;
 
         try
         {
-            var scale = RootGrid.XamlRoot?.RasterizationScale ?? 1.0;
-            var position = AppWindow.Position;
-            var x = Math.Max(0, (point.X - position.X) / scale);
-            var y = Math.Max(0, (point.Y - position.Y) / scale);
-            menu.ShowAt(RootGrid, new FlyoutShowOptions { Position = new Windows.Foundation.Point(x, y) });
+            AppendMenuW(hmenu, MfString, (UIntPtr)cmdOpen, "打开控制台");
+            AppendMenuW(hmenu, MfString, (UIntPtr)cmdWeb, "打开网页");
+            AppendMenuW(hmenu, MfSeparator, UIntPtr.Zero, null);
+            AppendMenuW(hmenu, MfString, (UIntPtr)cmdToggleBridge, _bridge.IsRunning ? "停止桥接" : "启动桥接");
+            AppendMenuW(
+                hmenu,
+                _bridge.IsRunning ? MfString : MfString | MfGrayed,
+                (UIntPtr)cmdRestartBridge,
+                "重启桥接"
+            );
+            AppendMenuW(hmenu, MfSeparator, UIntPtr.Zero, null);
+            AppendMenuW(hmenu, MfString, (UIntPtr)cmdExit, "退出");
+
+            // 用原生弹出菜单：它是独立顶层窗口，不受主窗口 Z 序影响，
+            // 也不会出现“窗口不在前台时菜单被压在最底层”的问题。
+            SetForegroundWindow(hwnd);
+            var command = TrackPopupMenuEx(hmenu, TpmReturnCmd | TpmRightButton, point.X, point.Y, hwnd, IntPtr.Zero);
+            PostMessageW(hwnd, 0x0000, IntPtr.Zero, IntPtr.Zero);
+
+            switch (command)
+            {
+                case cmdOpen:
+                    ShowFromTray();
+                    break;
+                case cmdWeb:
+                    OpenUrl();
+                    break;
+                case cmdToggleBridge when _bridge.IsRunning:
+                    _ = RunExclusiveAsync("停止中", StopCoreAsync);
+                    break;
+                case cmdToggleBridge:
+                    _ = RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: false));
+                    break;
+                case cmdRestartBridge:
+                    _ = RunExclusiveAsync("重启中", RestartBridgeAsync);
+                    break;
+                case cmdExit:
+                    ExitApplication();
+                    break;
+            }
         }
-        catch
+        finally
         {
+            DestroyMenu(hmenu);
         }
+    }
+
+    private void OnDetectWorkDaddyClick(object sender, RoutedEventArgs e)
+    {
+        var found = FindWorkDaddyExe(WorkDaddyPathBox.Text);
+        if (found is null)
+        {
+            WorkDaddyStatusText.Text = "未找到 WorkDaddy，请手动指定程序路径";
+            return;
+        }
+
+        WorkDaddyPathBox.Text = found;
+        WorkDaddyStatusText.Text = "已找到：" + Path.GetFileName(found);
+        AppendLog("检测到 WorkDaddy：" + found);
+    }
+
+    private static string? FindWorkDaddyExe(string? preferred)
+    {
+        var trimmed = (preferred ?? "").Trim();
+        if (trimmed.Length > 0 && File.Exists(trimmed))
+        {
+            return trimmed;
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var candidates = new[]
+        {
+            Path.Combine(localAppData, "Programs", "WorkDaddy", "WorkDaddy.exe"),
+            Path.Combine(localAppData, "WorkDaddy", "WorkDaddy.exe"),
+            Path.Combine(programFiles, "WorkDaddy", "WorkDaddy.exe"),
+        };
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>桥接就绪后按需拉起 WorkDaddy；CDP 端口必须与桥接一致，否则它注入会失效。</summary>
+    private void StartWorkDaddyIfNeeded()
+    {
+        try
+        {
+            var exe = FindWorkDaddyExe(_settings.WorkDaddyLauncherPath);
+            if (exe is null)
+            {
+                AppendLog("已开启 WorkDaddy，但没找到程序路径，请在设置里指定或点一次「检测插件」。");
+                return;
+            }
+
+            var psi = new ProcessStartInfo(exe)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(exe) ?? "",
+            };
+            psi.Environment["WBSWITCH_CDP_PORT"] = _settings.CdpPort.ToString();
+            Process.Start(psi);
+            AppendLog("已拉起 WorkDaddy（CDP 端口 " + _settings.CdpPort + "）。");
+        }
+        catch (Exception ex)
+        {
+            AppendLog("拉起 WorkDaddy 失败：" + ex.Message);
+        }
+    }
+
+    private async Task RestartBridgeAsync()
+    {
+        if (!_bridge.IsExternal)
+        {
+            await StopCoreAsync();
+        }
+        await StartCoreAsync(openBrowser: false);
     }
 
     public void ShowFromTray()
@@ -667,10 +773,10 @@ public sealed partial class MainWindow : Window
     // ---------- 命令 ----------
 
     private async void OnStartClick(object sender, RoutedEventArgs e)
-        => await RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: true));
+        => await RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: false));
 
     private async void OnRestartBridgeClick(object sender, RoutedEventArgs e)
-        => await RunExclusiveAsync("重启中", () => StartCoreAsync(openBrowser: true, restartWorkBuddy: true));
+        => await RunExclusiveAsync("重启中", () => StartCoreAsync(openBrowser: false, restartWorkBuddy: true));
 
     private async void OnStopClick(object sender, RoutedEventArgs e)
         => await RunExclusiveAsync("停止中", StopCoreAsync);
@@ -923,7 +1029,7 @@ public sealed partial class MainWindow : Window
     }
 
     private async void OnRestartWorkBuddyClick(object sender, RoutedEventArgs e)
-        => await RunExclusiveAsync("重启中", () => StartCoreAsync(openBrowser: true, restartWorkBuddy: true));
+        => await RunExclusiveAsync("重启中", () => StartCoreAsync(openBrowser: false, restartWorkBuddy: true));
 
     // ---------- 设置 ----------
 
@@ -939,6 +1045,7 @@ public sealed partial class MainWindow : Window
         KillBeforeStartCheck.IsOn = _settings.KillWorkBuddyProcessesBeforeStart;
         AutoRestartCheck.IsOn = _settings.AutoRestartWorkBuddy;
         StartWorkDaddyCheck.IsOn = _settings.StartWorkDaddy;
+        WorkDaddyPathBox.Text = _settings.WorkDaddyLauncherPath;
         AutoRunCheck.IsOn = StartupShortcut.IsEnabled();
         CloseToTrayCheck.IsOn = _settings.CloseToTray;
         KeepBridgeOnExitCheck.IsOn = _settings.KeepBridgeOnExit;
@@ -959,9 +1066,13 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        PasswordBox1.PlaceholderText = ScopeBox.SelectedIndex == 1
-            ? "局域网访问需要密码"
-            : (_hadPassword ? "留空表示不修改" : "未设置");
+        var isLan = ScopeBox.SelectedIndex == 1;
+        // 仅本机不需要密码，直接把这一整行收起来，避免误以为还要维护密码。
+        if (PasswordCard is not null)
+        {
+            PasswordCard.Visibility = isLan ? Visibility.Visible : Visibility.Collapsed;
+        }
+        PasswordBox1.PlaceholderText = isLan ? "访问密码（至少 4 位）" : "未设置";
     }
 
     private void OnReloadSettingsClick(object sender, RoutedEventArgs e)
@@ -1027,6 +1138,7 @@ public sealed partial class MainWindow : Window
         _settings.KillWorkBuddyProcessesBeforeStart = KillBeforeStartCheck.IsOn;
         _settings.AutoRestartWorkBuddy = AutoRestartCheck.IsOn;
         _settings.StartWorkDaddy = StartWorkDaddyCheck.IsOn;
+        _settings.WorkDaddyLauncherPath = WorkDaddyPathBox.Text.Trim();
         _settings.CloseToTray = CloseToTrayCheck.IsOn;
         _settings.KeepBridgeOnExit = KeepBridgeOnExitCheck.IsOn;
         _settings.EnableFileManager = FileManagerCheck.IsOn;
@@ -1065,32 +1177,6 @@ public sealed partial class MainWindow : Window
         PopulateAbout();
         AppendLog("设置已保存。");
         ShowSettingsInfo(InfoBarSeverity.Success, "已保存", "重新启动桥接后生效。");
-    }
-
-    private void OnClearPasswordClick(object sender, RoutedEventArgs e)
-    {
-        if (!_settings.HasPassword)
-        {
-            ShowSettingsInfo(InfoBarSeverity.Informational, "当前没有密码", "还没有设置访问密码。");
-            return;
-        }
-
-        _settings.PasswordHash = "";
-        try
-        {
-            _settings.Save();
-        }
-        catch (Exception ex)
-        {
-            ShowSettingsError("写入配置文件失败：" + ex.Message);
-            return;
-        }
-
-        _hadPassword = false;
-        PasswordBox1.Password = string.Empty;
-        PasswordBox2.Password = string.Empty;
-        AppendLog("访问密码已清除。");
-        ShowSettingsInfo(InfoBarSeverity.Success, "已清除访问密码", "重新启动桥接后生效。");
     }
 
     private static int? ReadPort(double value)
@@ -1141,6 +1227,11 @@ public sealed partial class MainWindow : Window
         AppendLog(result.Message);
         UpdateEnvironmentText();
 
+        if (result.Ok && _settings.StartWorkDaddy)
+        {
+            StartWorkDaddyIfNeeded();
+        }
+
         if (result.Ok && openBrowser)
         {
             OpenUrl();
@@ -1173,4 +1264,19 @@ public sealed partial class MainWindow : Window
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr CreatePopupMenu();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern bool AppendMenuW(IntPtr hMenu, uint uFlags, UIntPtr uIDNewItem, string? lpNewItem);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int TrackPopupMenuEx(IntPtr hMenu, uint fuFlags, int x, int y, IntPtr hwnd, IntPtr lptpm);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool DestroyMenu(IntPtr hMenu);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 }
