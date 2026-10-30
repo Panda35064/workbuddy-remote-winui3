@@ -207,6 +207,7 @@ CI：push / PR 跑语法检查、桥接冒烟与 `dotnet build`；打 `v*` tag �
 
 ## 🙏 致谢
 
+- **[vergess3/workbuddy-remote](https://github.com/vergess3/workbuddy-remote)** —— 本项目的上游项目，作者 **vergess3**。WebUI 复用方案、`buddyAPI` shim 与 CDP 桥接的核心实现来自这里；本项目在其基础上重构为 WinUI 3 控制台形态并持续修复远程体验问题。
 - **[WorkBuddy](https://www.codebuddy.cn/)** —— 本项目不包含它的任何二进制，界面资源来自本机安装的官方客户端，桥接层只补齐浏览器里缺失的原生能力。
 - **[WorkDaddy](https://github.com/babygoton/WorkDaddy)** —— 可选的账号切换插件，采用 AGPL-3.0，默认关闭、由用户主动开启。
 - 以及所有提交 Issue、反馈问题的使用者。

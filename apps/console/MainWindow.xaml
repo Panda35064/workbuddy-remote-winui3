@@ -691,6 +691,7 @@
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
                                     <TextBlock
                                         Text="GitHub"
@@ -713,6 +714,18 @@
                                         Style="{StaticResource CaptionTextBlockStyle}"
                                         IsTextSelectionEnabled="True"
                                         Text="Panda35064" />
+                                    <TextBlock
+                                        Grid.Row="2"
+                                        Text="上游项目"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock
+                                        Grid.Row="2"
+                                        Grid.Column="1"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        IsTextSelectionEnabled="True"
+                                        TextWrapping="Wrap"
+                                        Text="vergess3/workbuddy-remote（MIT）" />
                                 </Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <Button Click="OnOpenRepoClick" Style="{StaticResource AccentButtonStyle}">
