@@ -20,7 +20,6 @@ public sealed partial class MainWindow : Window
     private readonly bool _autostart;
     private readonly DispatcherTimer _timer = new();
     private readonly BridgeHost _bridge = new();
-    private TrayIcon? _tray;
     private bool _busy;
     private bool _initialized;
     private bool _exiting;
@@ -32,6 +31,8 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        ShowFromTrayCommand = new RelayCommand(ShowFromTray);
 
         _projectRoot = ProjectLocator.Resolve() ?? PromptForProjectRoot();
         _settings = AppSettings.Load(_projectRoot);
@@ -150,19 +151,11 @@ public sealed partial class MainWindow : Window
 
     private void CreateTray()
     {
-        if (_tray is not null)
-        {
-            return;
-        }
-
         try
         {
-            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-            var icon = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
-            _tray = new TrayIcon(hwnd, icon, "WorkBuddy Remote 控制台");
-            _tray.DoubleClick += () => Dispatch(ShowFromTray);
-            _tray.RightClick += point => Dispatch(() => ShowTrayMenu(point));
-            AppendLog(_tray.IsAdded ? "托盘图标已创建。" : "托盘图标创建失败（Shell_NotifyIcon 返回 false）。");
+            // H.NotifyIcon 的 TaskbarIcon 在 XAML 里声明，这里只负责确保系统托盘图标注册成功。
+            TrayIconHost.ForceCreate();
+            AppendLog("托盘图标已创建（H.NotifyIcon）。");
         }
         catch (Exception ex)
         {
@@ -170,80 +163,30 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ShowTrayMenu(TrayIcon.POINT point)
+    // ---------- 托盘菜单（菜单项在 XAML 里声明，这里只处理命令） ----------
+    // 托盘双击唤回控制台（H.NotifyIcon 用 ICommand，不暴露 Click 事件）。
+    public System.Windows.Input.ICommand ShowFromTrayCommand { get; }
+
+    private void OnTrayOpenClick(object sender, RoutedEventArgs e) => ShowFromTray();
+
+    private void OnTrayOpenWebClick(object sender, RoutedEventArgs e) => OpenUrl();
+
+    private async void OnTrayToggleBridgeClick(object sender, RoutedEventArgs e)
     {
-        if (_tray is null)
+        if (_bridge.IsRunning)
         {
-            return;
+            await RunExclusiveAsync("停止中", StopCoreAsync);
         }
-
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        var hmenu = CreatePopupMenu();
-        if (hmenu == IntPtr.Zero)
+        else
         {
-            return;
-        }
-
-        const uint MfString = 0x00000000;
-        const uint MfSeparator = 0x00000800;
-        const uint MfGrayed = 0x00000001;
-        const uint TpmReturnCmd = 0x0100;
-        const uint TpmRightButton = 0x0002;
-
-        const int cmdOpen = 1;
-        const int cmdWeb = 2;
-        const int cmdToggleBridge = 3;
-        const int cmdRestartBridge = 4;
-        const int cmdExit = 5;
-
-        try
-        {
-            AppendMenuW(hmenu, MfString, (UIntPtr)cmdOpen, "打开控制台");
-            AppendMenuW(hmenu, MfString, (UIntPtr)cmdWeb, "打开网页");
-            AppendMenuW(hmenu, MfSeparator, UIntPtr.Zero, null);
-            AppendMenuW(hmenu, MfString, (UIntPtr)cmdToggleBridge, _bridge.IsRunning ? "停止桥接" : "启动桥接");
-            AppendMenuW(
-                hmenu,
-                _bridge.IsRunning ? MfString : MfString | MfGrayed,
-                (UIntPtr)cmdRestartBridge,
-                "重启桥接"
-            );
-            AppendMenuW(hmenu, MfSeparator, UIntPtr.Zero, null);
-            AppendMenuW(hmenu, MfString, (UIntPtr)cmdExit, "退出");
-
-            // 用原生弹出菜单：它是独立顶层窗口，不受主窗口 Z 序影响，
-            // 也不会出现“窗口不在前台时菜单被压在最底层”的问题。
-            SetForegroundWindow(hwnd);
-            var command = TrackPopupMenuEx(hmenu, TpmReturnCmd | TpmRightButton, point.X, point.Y, hwnd, IntPtr.Zero);
-            PostMessageW(hwnd, 0x0000, IntPtr.Zero, IntPtr.Zero);
-
-            switch (command)
-            {
-                case cmdOpen:
-                    ShowFromTray();
-                    break;
-                case cmdWeb:
-                    OpenUrl();
-                    break;
-                case cmdToggleBridge when _bridge.IsRunning:
-                    _ = RunExclusiveAsync("停止中", StopCoreAsync);
-                    break;
-                case cmdToggleBridge:
-                    _ = RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: false));
-                    break;
-                case cmdRestartBridge:
-                    _ = RunExclusiveAsync("重启中", RestartBridgeAsync);
-                    break;
-                case cmdExit:
-                    ExitApplication();
-                    break;
-            }
-        }
-        finally
-        {
-            DestroyMenu(hmenu);
+            await RunExclusiveAsync("启动中", () => StartCoreAsync(openBrowser: false));
         }
     }
+
+    private async void OnTrayRestartBridgeClick(object sender, RoutedEventArgs e)
+        => await RunExclusiveAsync("重启中", RestartBridgeAsync);
+
+    private void OnTrayExitClick(object sender, RoutedEventArgs e) => ExitApplication();
 
     private void OnDetectWorkDaddyClick(object sender, RoutedEventArgs e)
     {
@@ -349,7 +292,7 @@ public sealed partial class MainWindow : Window
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        if (_exiting || !_settings.CloseToTray || _tray is null)
+        if (_exiting || !_settings.CloseToTray || TrayIconHost is null)
         {
             return;
         }
@@ -359,7 +302,7 @@ public sealed partial class MainWindow : Window
 
         if (!_settings.TrayTipShown)
         {
-            _tray.ShowBalloon("WorkBuddy Remote 仍在运行", "双击托盘图标可以重新打开控制台。右键菜单里可以退出。");
+            AppendLog("已收进托盘：双击图标可唤回控制台，右键菜单可退出。");
             _settings.TrayTipShown = true;
             try
             {
@@ -389,8 +332,7 @@ public sealed partial class MainWindow : Window
         {
         }
 
-        _tray?.Dispose();
-        _tray = null;
+        TrayIconHost?.Dispose();
 
         try
         {
@@ -567,7 +509,12 @@ public sealed partial class MainWindow : Window
         }
 
         WorkDaddyText.Text = await DetectWorkDaddyAsync();
-        _tray?.UpdateTooltip(portOpen ? $"WorkBuddy Remote · 运行中（:{_settings.BridgePort}）" : "WorkBuddy Remote · 已停止");
+        TrayIconHost.ToolTipText = portOpen ? $"WorkBuddy Remote · 运行中（:{_settings.BridgePort}）" : "WorkBuddy Remote · 已停止";
+        if (TrayToggleBridgeItem is not null)
+        {
+            TrayToggleBridgeItem.Text = _bridge.IsRunning ? "停止桥接" : "启动桥接";
+            TrayRestartBridgeItem.IsEnabled = _bridge.IsRunning;
+        }
     }
 
     private static async Task<string> DetectWorkDaddyAsync()
@@ -1264,19 +1211,14 @@ public sealed partial class MainWindow : Window
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+}
 
-    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr CreatePopupMenu();
+/// <summary>最简单的 ICommand 实现，供托盘双击唤回使用。</summary>
+internal sealed class RelayCommand(Action action) : System.Windows.Input.ICommand
+{
+    public event EventHandler? CanExecuteChanged;
 
-    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-    private static extern bool AppendMenuW(IntPtr hMenu, uint uFlags, UIntPtr uIDNewItem, string? lpNewItem);
+    public bool CanExecute(object? parameter) => true;
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern int TrackPopupMenuEx(IntPtr hMenu, uint fuFlags, int x, int y, IntPtr hwnd, IntPtr lptpm);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool DestroyMenu(IntPtr hMenu);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+    public void Execute(object? parameter) => action();
 }

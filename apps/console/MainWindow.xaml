@@ -4,6 +4,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:WorkBuddyRemote.WinUI"
+    xmlns:tb="using:H.NotifyIcon"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
@@ -802,5 +803,47 @@
                 </ScrollViewer>
             </Grid>
         </NavigationView>
+
+        <!-- 托盘图标：H.NotifyIcon 提供 WinUI 风格菜单（SecondWindow 模式会单独起一个透明窗口渲染，
+             这样即使主窗口隐藏/在后台，菜单也能正常弹出并显示在最上层）。 -->
+        <tb:TaskbarIcon
+            x:Name="TrayIconHost"
+            IconSource="ms-appx:///Assets/app.ico"
+            ToolTipText="WorkBuddy Remote 控制台"
+            MenuActivation="RightClick"
+            ContextMenuMode="SecondWindow"
+            DoubleClickCommand="{x:Bind ShowFromTrayCommand}">
+            <tb:TaskbarIcon.ContextFlyout>
+                <MenuFlyout>
+                    <MenuFlyoutItem Text="打开控制台" Click="OnTrayOpenClick">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE8A7;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutItem Text="打开网页" Click="OnTrayOpenWebClick">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE774;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="TrayToggleBridgeItem" Text="启动桥接" Click="OnTrayToggleBridgeClick">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE768;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutItem x:Name="TrayRestartBridgeItem" Text="重启桥接" Click="OnTrayRestartBridgeClick">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE72C;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="退出" Click="OnTrayExitClick">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE7E8;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                </MenuFlyout>
+            </tb:TaskbarIcon.ContextFlyout>
+        </tb:TaskbarIcon>
     </Grid>
 </Window>
