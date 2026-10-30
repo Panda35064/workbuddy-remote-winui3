@@ -532,49 +532,32 @@
                             </local:SettingsCard.CardContent>
                         </local:SettingsCard>
 
-                        <Expander
-                            HorizontalAlignment="Stretch"
-                            HorizontalContentAlignment="Stretch"
-                            IsExpanded="False">
-                            <Expander.Header>
-                                <Grid ColumnSpacing="12" Padding="0,4" HorizontalAlignment="Stretch">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <FontIcon Glyph="&#xE8F8;" FontSize="16" VerticalAlignment="Center" />
-                                    <StackPanel Grid.Column="1" Spacing="2">
-                                        <TextBlock Text="WorkDaddy 插件" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                                        <TextBlock
-                                            Text="可选：启动 WorkBuddy 时一并拉起 WorkDaddy 守护进程（共用 CDP 端口）"
-                                            Style="{StaticResource CaptionTextBlockStyle}"
-                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                            TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <ToggleSwitch
-                                        x:Name="StartWorkDaddyCheck"
-                                        Grid.Column="2"
-                                        MinWidth="0"
-                                        VerticalAlignment="Center" />
-                                </Grid>
-                            </Expander.Header>
-                            <StackPanel Spacing="8" Padding="0,4,0,8">
-                                <TextBox
-                                    x:Name="WorkDaddyPathBox"
-                                    Header="WorkDaddy 程序地址"
-                                    PlaceholderText="留空时自动检测（常见安装目录）" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="WorkDaddy" Style="{StaticResource SectionHeaderTextBlockStyle}" />
+
+                        <local:SettingsCard Glyph="&#xE8F8;" Header="WorkDaddy 插件" Description="可选：启动 WorkBuddy 时一并拉起守护进程（共用 CDP 端口）">
+                            <local:SettingsCard.CardContent>
+                                <ToggleSwitch x:Name="StartWorkDaddyCheck" MinWidth="0" />
+                            </local:SettingsCard.CardContent>
+                        </local:SettingsCard>
+
+                        <local:SettingsCard Glyph="&#xE8B7;" Header="WorkDaddy 程序地址" Description="留空时自动检测常见安装目录">
+                            <local:SettingsCard.CardContent>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                    <TextBox
+                                        x:Name="WorkDaddyPathBox"
+                                        Width="280"
+                                        PlaceholderText="留空自动检测" />
                                     <Button Content="检测插件" Click="OnDetectWorkDaddyClick" />
-                                    <TextBlock
-                                        x:Name="WorkDaddyStatusText"
-                                        VerticalAlignment="Center"
-                                        Style="{StaticResource CaptionTextBlockStyle}"
-                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        Text="尚未检测" />
                                 </StackPanel>
-                            </StackPanel>
-                        </Expander>
+                            </local:SettingsCard.CardContent>
+                        </local:SettingsCard>
+
+                        <TextBlock
+                            x:Name="WorkDaddyStatusText"
+                            Margin="16,0,0,0"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="尚未检测" />
 
                         <local:SettingsCard Glyph="&#xE7E8;" Header="开机静默启动" Description="登录后在后台静默启动桥接，不弹窗、只在托盘显示图标">
                             <local:SettingsCard.CardContent>
