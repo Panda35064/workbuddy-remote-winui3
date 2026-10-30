@@ -636,7 +636,7 @@
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                         Text="—" />
                                     <TextBlock
-                                        Text="通过 CDP 桥接把 WorkBuddy 的界面映射到浏览器：支持远程文件浏览、设置、产物查看，并集成 WorkDaddy 账号切换。"
+                                        Text="通过 CDP 桥接把 WorkBuddy 的界面映射到浏览器：支持远程文件浏览、设置、产物查看，兼容 WorkDaddy 插件。"
                                         Style="{StaticResource CaptionTextBlockStyle}"
                                         TextWrapping="Wrap"
                                         Margin="0,4,0,0" />
@@ -673,6 +673,57 @@
                                     <TextBlock Grid.Row="5" Text="端口" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     <TextBlock x:Name="AboutPortsText" Grid.Row="5" Grid.Column="1" Style="{StaticResource CaptionTextBlockStyle}" Text="—" />
                                 </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="项目" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                <Grid ColumnSpacing="12" RowSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="96" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock
+                                        Text="GitHub"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock
+                                        Grid.Column="1"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        IsTextSelectionEnabled="True"
+                                        TextWrapping="Wrap"
+                                        Text="https://github.com/Panda35064/workbuddy-remote-winui3" />
+                                    <TextBlock
+                                        Grid.Row="1"
+                                        Text="作者"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock
+                                        Grid.Row="1"
+                                        Grid.Column="1"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        IsTextSelectionEnabled="True"
+                                        Text="Panda35064" />
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Click="OnOpenRepoClick" Style="{StaticResource AccentButtonStyle}">
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <FontIcon Glyph="&#xE8A7;" FontSize="14" />
+                                            <TextBlock Text="打开 GitHub 仓库" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Click="OnOpenIssuesClick">
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <FontIcon Glyph="&#xE734;" FontSize="14" />
+                                            <TextBlock Text="去 Star / 反馈问题" />
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 

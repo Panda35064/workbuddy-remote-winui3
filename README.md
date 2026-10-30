@@ -16,7 +16,7 @@
 
 <a href="https://github.com/Panda35064/workbuddy-remote-winui3/releases">下载</a> ｜
 <a href="https://github.com/Panda35064/workbuddy-remote-winui3/issues">问题提交</a> ｜
-<a href="https://github.com/Panda35064/workbuddy-remote-winui3/blob/v2/README.md">文档</a>
+<a href="https://github.com/Panda35064/workbuddy-remote-winui3/blob/main/README.md">文档</a>
 
 </div>
 

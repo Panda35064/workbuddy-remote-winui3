@@ -720,6 +720,24 @@ public sealed partial class MainWindow : Window
 
     private void OnOpenProjectClick(object sender, RoutedEventArgs e) => OpenFolder(_projectRoot);
 
+    private void OnOpenRepoClick(object sender, RoutedEventArgs e) =>
+        OpenUrl("https://github.com/Panda35064/workbuddy-remote-winui3");
+
+    private void OnOpenIssuesClick(object sender, RoutedEventArgs e) =>
+        OpenUrl("https://github.com/Panda35064/workbuddy-remote-winui3/issues");
+
+    private void OpenUrl(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppendLog("打开链接失败：" + ex.Message);
+        }
+    }
+
     private void OnOpenConfigClick(object sender, RoutedEventArgs e)
     {
         try
