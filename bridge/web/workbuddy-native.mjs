@@ -3948,6 +3948,7 @@ function renderWorkBuddyNativeShimJs({
   // 会持续推事件，前端收到后会把“当前会话”同步成桌面端的活动会话，
   // 表现为：刚跳到新会话，几秒后又被拉回原来那个会话。这里只放行当前会话的事件。
   var activeConversationId = "";
+  var lastCreatedTitle = "";
 
   function deliverDesktopEvent(event, payload) {
     if (!desktopEventSubscribers.length) {
@@ -3964,6 +3965,14 @@ function renderWorkBuddyNativeShimJs({
       try {
         reportBrowserLog("event-created", "created-event " + String(event) + " " + JSON.stringify(payload).slice(0, 500));
       } catch (error) {
+      }
+      // 远程页面的内存路由只改 location、不重渲染视图（navigate 成功但界面停在首页）。
+      // 列表刷新后模拟点击该会话，等价于用户手动点一下——已验证手动点击能正常打开。
+      var createdConversationId = String(eventConversationId || "");
+      if (createdConversationId) {
+        setTimeout(function () {
+          openConversationFromList(lastCreatedTitle, createdConversationId);
+        }, 1500);
       }
     }
     if (
@@ -4194,6 +4203,10 @@ function renderWorkBuddyNativeShimJs({
 
   function installDesktopHostShim() {
     installBrowserLogReporting();
+    // 启动探针：确认页面里跑的是新版 shim（排查远程问题时最怕改了半天没生效）。
+    setTimeout(function () {
+      reportBrowserLog("shim-boot", "nav-fix-v3 loaded");
+    }, 2500);
     window.addEventListener("message", handleDaemonTransportRequest);
     installExtensionAssetBridge();
     installDesktopTerminalBridge();
@@ -4280,6 +4293,12 @@ function renderWorkBuddyNativeShimJs({
   // 这是唯一验证过能正确切换视图的路径。
   function openConversationFromList(title, conversationId) {
     try {
+      var keyword = String(title || "").trim();
+      reportBrowserLog(
+        "nav-fix",
+        "attempt id=" + String(conversationId || "").slice(0, 12) + " title=" + keyword.slice(0, 20)
+      );
+
       var byIdSelectors = [
         '[data-conversation-id="' + conversationId + '"]',
         '[data-id="' + conversationId + '"]',
@@ -4294,13 +4313,13 @@ function renderWorkBuddyNativeShimJs({
         }
       }
 
-      var keyword = String(title || "").trim();
       if (!keyword) {
         reportBrowserLog("nav-fix", "no title to match");
         return;
       }
 
       var nodes = document.querySelectorAll("button, a, li, [role=button], [role=option], [role=treeitem]");
+      var best = null;
       for (var i = 0; i < nodes.length; i += 1) {
         var element = nodes[i];
         var tag = String(element.tagName || "").toLowerCase();
@@ -4314,8 +4333,15 @@ function renderWorkBuddyNativeShimJs({
         if (element.offsetParent === null) {
           continue;
         }
-        element.click();
-        reportBrowserLog("nav-fix", "clicked by title: " + keyword.slice(0, 24));
+        // 取文本最短的匹配（最内层），避免点到包含整片列表的容器。
+        if (!best || content.length < best.length) {
+          best = { element: element, length: content.length };
+        }
+      }
+
+      if (best) {
+        best.element.click();
+        reportBrowserLog("nav-fix", "clicked by title, len=" + best.length);
         return;
       }
       reportBrowserLog("nav-fix", "list item not found: " + keyword.slice(0, 24));
@@ -4343,6 +4369,7 @@ function renderWorkBuddyNativeShimJs({
     // 新建任务：create 成功即代表前端要切到新会话，立即把当前会话设为新 id。
     // 否则 activeConversationId 还停留在旧会话，旧会话的推送事件会一路放行、把页面拽回去。
     if (channel === "wb:conversations:create") {
+      reportBrowserLog("nav-fix", "create entry");
       return request({
         type: "desktop-host-invoke",
         via: via || "",
@@ -4353,12 +4380,11 @@ function renderWorkBuddyNativeShimJs({
           var createdId = result && result.info && result.info.id;
           if (typeof createdId === "string" && createdId) {
             activeConversationId = createdId;
-            var createdTitle = (result.info && result.info.title) || "";
-            // 远程页面的内存路由只更新 location、不重渲染视图（日志里 navigate 成功但界面停在首页）。
-            // 这里在列表刷新后模拟点击该会话——和用户手动点一下完全等价，是唯一验证过能切过去的路径。
-            setTimeout(function () {
-              openConversationFromList(createdTitle, createdId);
-            }, 1200);
+            lastCreatedTitle = (result.info && result.info.title) || "";
+            reportBrowserLog(
+              "nav-fix",
+              "create ok id=" + createdId.slice(0, 12) + " title=" + String(lastCreatedTitle).slice(0, 16)
+            );
           }
         } catch (error) {
         }
