@@ -200,43 +200,23 @@ public sealed partial class MainWindow : Window
 
     private void OnDetectWorkDaddyClick(object sender, RoutedEventArgs e)
     {
-        var found = FindWorkDaddyExe(WorkDaddyPathBox.Text);
-        if (found is null)
+        var (path, source) = WorkDaddyLocator.Find(WorkDaddyPathBox.Text);
+        if (path is null)
         {
-            WorkDaddyStatusText.Text = "未找到 WorkDaddy，请手动指定程序路径";
+            WorkDaddyStatusText.Text = "未找到 WorkDaddy，请手动填写程序路径";
+            AppendLog(
+                "WorkDaddy 检测失败：运行进程、App Paths、卸载注册表、开始菜单快捷方式、PATH、常见目录均未命中。"
+            );
             return;
         }
 
-        WorkDaddyPathBox.Text = found;
-        WorkDaddyStatusText.Text = "已找到：" + Path.GetFileName(found);
-        AppendLog("检测到 WorkDaddy：" + found);
+        WorkDaddyPathBox.Text = path;
+        WorkDaddyStatusText.Text = "已找到（" + source + "）：" + Path.GetFileName(path);
+        AppendLog("检测到 WorkDaddy（" + source + "）：" + path);
     }
 
     private static string? FindWorkDaddyExe(string? preferred)
-    {
-        var trimmed = (preferred ?? "").Trim();
-        if (trimmed.Length > 0 && File.Exists(trimmed))
-        {
-            return trimmed;
-        }
-
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var candidates = new[]
-        {
-            Path.Combine(localAppData, "Programs", "WorkDaddy", "WorkDaddy.exe"),
-            Path.Combine(localAppData, "WorkDaddy", "WorkDaddy.exe"),
-            Path.Combine(programFiles, "WorkDaddy", "WorkDaddy.exe"),
-        };
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-        return null;
-    }
+        => WorkDaddyLocator.Find(preferred).Path;
 
     /// <summary>桥接就绪后按需拉起 WorkDaddy；CDP 端口必须与桥接一致，否则它注入会失效。</summary>
     private void StartWorkDaddyIfNeeded()
