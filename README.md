@@ -205,6 +205,14 @@ CI：push / PR 跑语法检查、桥接冒烟与 `dotnet build`；打 `v*` tag �
 
 刷新网页只重建浏览器到桥接服务的 WebSocket，不会新建 WorkBuddy 进程。桥接进程随控制台退出而结束（`keepBridgeOnExit` 关时），Job Object 保证不会留下孤儿进程。桌面 WorkBuddy 仍负责原生会话、任务、内存和账号状态。
 
+## 🙏 致谢
+
+- **[WorkBuddy](https://www.codebuddy.cn/)** —— 本项目不包含它的任何二进制，界面资源来自本机安装的官方客户端，桥接层只补齐浏览器里缺失的原生能力。
+- **[WorkDaddy](https://github.com/babygoton/WorkDaddy)** —— 可选的账号切换插件，采用 AGPL-3.0，默认关闭、由用户主动开启。
+- 以及所有提交 Issue、反馈问题的使用者。
+
+> 本项目为**非官方**第三方工具，与 WorkBuddy 官方团队无关。
+
 ## 📄 第三方声明
 
 - WorkDaddy 采用 **AGPL-3.0**。本项目不打包它的任何文件、默认关闭、由用户主动开启；开启后桥接会在运行时读取本机已安装的 WorkDaddy 资源并经由本项目 HTTP 服务对外提供，按 AGPL §13 网络条款，源码请见 <https://github.com/babygoton/WorkDaddy>。

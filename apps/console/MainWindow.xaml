@@ -636,6 +636,10 @@
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                         Text="—" />
                                     <TextBlock
+                                        Text="非官方项目 · 与 WorkBuddy 官方团队无关"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                    <TextBlock
                                         Text="通过 CDP 桥接把 WorkBuddy 的界面映射到浏览器：支持远程文件浏览、设置、产物查看，兼容 WorkDaddy 插件。"
                                         Style="{StaticResource CaptionTextBlockStyle}"
                                         TextWrapping="Wrap"
