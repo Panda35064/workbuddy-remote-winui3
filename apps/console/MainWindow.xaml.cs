@@ -167,6 +167,16 @@ public sealed partial class MainWindow : Window
     // 托盘双击唤回控制台（H.NotifyIcon 用 ICommand，不暴露 Click 事件）。
     public System.Windows.Input.ICommand ShowFromTrayCommand { get; }
 
+    // H.NotifyIcon 的 SecondWindow 模式会在显示前按自己的位置计算覆盖 Placement，
+    // 导致菜单从上方往下展开。这里在打开事件里最后纠正一次方向。
+    private void OnTrayMenuOpening(object? sender, object e)
+    {
+        if (sender is MenuFlyout flyout)
+        {
+            flyout.Placement = FlyoutPlacementMode.Top;
+        }
+    }
+
     private void OnTrayOpenClick(object sender, RoutedEventArgs e) => ShowFromTray();
 
     private void OnTrayOpenWebClick(object sender, RoutedEventArgs e) => OpenUrl();
